@@ -20,8 +20,8 @@ fn standard_ops() -> Vec<(String, TruthTable)> {
     add_op(Expr::And(standard_binop()));
     add_op(Expr::Or(standard_binop()));
     add_op(Expr::Xor(standard_binop()));
-    add_op(Expr::Not(Box::new(Expr::Var(0))));
-    add_op(Expr::Not(Box::new(Expr::Var(1))));
+    // add_op(Expr::Not(Box::new(Expr::Var(0))));
+    // add_op(Expr::Not(Box::new(Expr::Var(1))));
     add_op(Expr::Lshift(standard_binop()));
     add_op(Expr::Rshift(standard_binop()));
     add_op(Expr::RshiftS(standard_binop()));
