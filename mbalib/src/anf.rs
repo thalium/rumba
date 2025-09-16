@@ -101,7 +101,7 @@ impl Default for ANF {
 }
 
 impl BitXor for ANF {
-    type Output = ANF;
+    type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
         ANF::xor(vec![self, rhs])
@@ -109,10 +109,18 @@ impl BitXor for ANF {
 }
 
 impl BitAnd for ANF {
-    type Output = ANF;
+    type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
         ANF::and(vec![self, rhs])
+    }
+}
+
+impl BitOr for ANF {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        (self.clone() & rhs.clone()) ^ (self ^ rhs)
     }
 }
 
@@ -233,13 +241,13 @@ impl Shl<u128> for ANFExpr {
         let n = self.bits.len();
 
         Self::Output {
-            bits: self
-                .bits
-                .into_iter()
-                .enumerate()
-                .map(|(i, a)| {
-                    let i = i + rhs as usize;
-                    if i < n { a } else { ANF::Zero }
+            bits: (0..n)
+                .map(|i| {
+                    if i as u128 >= rhs {
+                        self.bits[i - rhs as usize].clone()
+                    } else {
+                        ANF::Zero
+                    }
                 })
                 .collect(),
         }
@@ -250,13 +258,17 @@ impl Shr<u128> for ANFExpr {
     type Output = Self;
 
     fn shr(self, rhs: u128) -> Self::Output {
-        let c = rhs as usize;
+        let rhs = rhs as usize;
+        let n = self.bits.len();
         Self::Output {
-            bits: self
-                .bits
-                .into_iter()
-                .enumerate()
-                .map(|(i, a)| if i >= c { a } else { ANF::Zero })
+            bits: (0..n)
+                .map(|i| {
+                    if i + rhs < n {
+                        self.bits[i + rhs].clone() // take the bit rhs positions to the right
+                    } else {
+                        ANF::Zero // fill top bits with zero
+                    }
+                })
                 .collect(),
         }
     }
@@ -281,35 +293,36 @@ impl Mul for ANFExpr {
         let mut sum = ANFExpr::zero(n);
         let mut carry = ANFExpr::zero(n);
 
-        for i in 0..n {
-            if rhs[i] != ANF::Zero {
-                let shifted = self.clone() << i as u128;
-
-                // For each bit position: CSA combine (sum, carry, shifted)
-                let mut new_sum = ANFExpr::zero(n);
-                let mut new_carry = ANFExpr::zero(n);
-
-                for j in 0..n {
-                    let a = sum.bits[j].clone();
-                    let b = carry.bits[j].clone();
-                    let c = shifted.bits.get(j).cloned().unwrap_or(ANF::Zero);
-
-                    // Carry-save adder logic
-                    new_sum.bits[j] = ANF::xor(vec![a.clone(), b.clone(), c.clone()]);
-                    new_carry.bits[j] = ANF::xor(vec![
-                        ANF::and(vec![a.clone(), b.clone()]),
-                        ANF::and(vec![a.clone(), c.clone()]),
-                        ANF::and(vec![b.clone(), c.clone()]),
-                    ]);
-                }
-
-                sum = new_sum;
-                // left shift carry bits by 1
-                carry = new_carry << 1;
+        for (i, rhs_bit) in rhs.bits.into_iter().enumerate() {
+            if rhs_bit == ANF::Zero {
+                continue;
             }
+
+            let shifted = (self.clone() << (i as u128)) * rhs_bit; // shift self by i
+
+            // CSA combine sum, carry, shifted
+            let mut new_sum = ANFExpr::zero(n);
+            let mut new_carry = ANFExpr::zero(n);
+
+            for (j, ((a, b), c)) in sum
+                .bits
+                .into_iter()
+                .zip(carry.bits)
+                .zip(shifted.bits)
+                .enumerate()
+            {
+                new_sum.bits[j] = ANF::xor(vec![a.clone(), b.clone(), c.clone()]);
+                new_carry.bits[j] = ANF::xor(vec![
+                    ANF::and(vec![a.clone(), b.clone()]),
+                    ANF::and(vec![a, c.clone()]),
+                    ANF::and(vec![b, c]),
+                ]);
+            }
+
+            sum = new_sum;
+            carry = new_carry << 1;
         }
 
-        // Final carry-propagate addition
         sum + carry
     }
 }
@@ -560,8 +573,97 @@ impl ANFExpr {
 mod tests {
     use super::*; // import the outer module
 
+    const TV: [(u128, u128); 6] = [(1, 2), (3, 4), (0, 5), (42, 77), (88, 102), (155, 268)];
+
     #[test]
-    fn test_add_positive() {
-        assert_eq!(add(2, 3), 5);
+    fn test_add() {
+        for (a, b) in TV {
+            assert_eq!(
+                (ANFExpr::from_value(a, 8) + ANFExpr::from_value(b, 8))
+                    .to_int()
+                    .unwrap(),
+                (a as u8 + b as u8) as u128
+            );
+        }
+    }
+
+    #[test]
+    fn test_sub() {
+        for (a, b) in TV {
+            assert_eq!(
+                (ANFExpr::from_value(a, 8) - ANFExpr::from_value(b, 8))
+                    .to_int()
+                    .unwrap(),
+                (a as u8).wrapping_sub(b as u8) as u128
+            );
+        }
+    }
+
+    #[test]
+    fn test_mul() {
+        for (a, b) in TV {
+            assert_eq!(
+                (ANFExpr::from_value(a, 8) * ANFExpr::from_value(b, 8))
+                    .to_int()
+                    .unwrap(),
+                (a as u8).wrapping_mul(b as u8) as u128
+            );
+        }
+    }
+
+    #[test]
+    fn test_xor() {
+        for (a, b) in TV {
+            assert_eq!(
+                (ANFExpr::from_value(a, 8) ^ ANFExpr::from_value(b, 8))
+                    .to_int()
+                    .unwrap(),
+                (a as u8 ^ b as u8) as u128
+            );
+        }
+    }
+
+    #[test]
+    fn test_and() {
+        for (a, b) in TV {
+            assert_eq!(
+                (ANFExpr::from_value(a, 8) & ANFExpr::from_value(b, 8))
+                    .to_int()
+                    .unwrap(),
+                (a as u8 & b as u8) as u128
+            );
+        }
+    }
+
+    #[test]
+    fn test_or() {
+        for (a, b) in TV {
+            assert_eq!(
+                (ANFExpr::from_value(a, 8) | ANFExpr::from_value(b, 8))
+                    .to_int()
+                    .unwrap(),
+                (a as u8 | b as u8) as u128
+            );
+        }
+    }
+
+    #[test]
+    fn test_invert() {
+        for (a, _) in TV {
+            assert_eq!(
+                (-ANFExpr::from_value(a, 8)).to_int().unwrap(),
+                (-(a as i8) as u8) as u128
+            );
+        }
+    }
+
+    #[test]
+    fn test_neg() {
+        for (a, _) in TV {
+            assert_eq!(
+                (!ANFExpr::from_value(a, 8)).to_int().unwrap(),
+                (!a as u8) as u128
+            );
+        }
     }
 }
