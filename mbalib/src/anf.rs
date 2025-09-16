@@ -1,7 +1,4 @@
-use crate::{
-    anf,
-    expr::{self, Expr},
-};
+use crate::expr::{self, Binop, Expr};
 use std::{
     array::from_fn,
     fmt::{Display, Write},
@@ -18,164 +15,81 @@ pub enum ANF {
 }
 
 impl ANF {
-    fn rules(&self) -> Self {
+    pub fn eval(&self, vars: &Vec<u128>) -> u128 {
         match self {
-            ANF::And(anfs) => {
-                let anfs: Vec<ANF> = anfs
-                    .iter()
-                    .cloned()
-                    .filter(|a| !matches!(a, ANF::One))
-                    .collect();
-
-                if anfs.contains(&ANF::Zero) {
-                    return ANF::Zero;
-                }
-
-                match anfs.len() {
-                    0 => ANF::One,
-                    1 => anfs.into_iter().next().unwrap().rules(),
-                    _ => ANF::And(anfs.iter().map(|v| v.rules()).collect()),
-                }
-            }
-
-            ANF::Xor(anfs) => {
-                let anfs: Vec<ANF> = anfs
-                    .iter()
-                    .cloned()
-                    .filter(|a| !matches!(a, ANF::Zero))
-                    .collect();
-
-                match anfs.len() {
-                    0 => ANF::Zero,
-                    1 => anfs.into_iter().next().unwrap().rules(),
-                    _ => ANF::Xor(anfs.iter().map(|v| v.rules()).collect()),
-                }
-            }
-
-            e => e.clone(),
+            ANF::Xor(anfs) => anfs.iter().map(|a| a.eval(vars)).fold(0, |x, y| x ^ y),
+            ANF::And(anfs) => anfs.iter().map(|a| a.eval(vars)).fold(1, |x, y| x & y),
+            ANF::One => 1,
+            ANF::Zero => 0,
+            ANF::Var(i, j) => (vars[*i] >> j) & 1,
         }
     }
 
-    fn flatten(&self) -> Self {
-        match self {
-            ANF::Xor(anfs) => {
-                let flattened: Vec<_> = anfs
-                    .iter()
-                    .flat_map(|anf| match anf {
-                        ANF::Xor(inner) => inner.iter().cloned().map(|e| e.flatten()).collect(),
-                        _ => vec![anf.clone()],
-                    })
-                    .collect();
-                ANF::Xor(flattened)
+    pub fn xor(mut terms: Vec<ANF>) -> ANF {
+        let mut flat = Vec::with_capacity(terms.len());
+        for t in terms.drain(..) {
+            match t {
+                ANF::Xor(inner) => flat.extend(inner),
+                ANF::Zero => {}
+                other => flat.push(other),
             }
-
-            ANF::And(anfs) => {
-                let flattened: Vec<_> = anfs
-                    .iter()
-                    .flat_map(|anf| match anf {
-                        ANF::And(inner) => inner.iter().cloned().map(|e| e.flatten()).collect(),
-                        _ => vec![anf.clone()],
-                    })
-                    .collect();
-                ANF::And(flattened)
-            }
-
-            e => e.clone(),
         }
-    }
 
-    fn distribute(self) -> Self {
-        match self {
-            ANF::And(mut factors) => {
-                // If any factor is an XOR, distribute it
-                if let Some(pos) = factors.iter().position(|f| matches!(f, ANF::Xor(_))) {
-                    if let ANF::Xor(xor_terms) = factors.remove(pos) {
-                        let mut new_terms = vec![];
-                        for term in xor_terms {
-                            let mut copy = factors.clone();
-                            copy.insert(pos, term);
-                            new_terms.push(ANF::And(copy).distribute());
-                        }
-                        return ANF::Xor(new_terms);
-                    }
-                }
-
-                ANF::And(factors)
-            }
-
-            e => e,
-        }
-    }
-
-    fn sort(&mut self) -> &Self {
-        match self {
-            ANF::And(anfs) | ANF::Xor(anfs) => {
-                for anf in anfs.iter_mut() {
-                    anf.sort();
-                }
-
-                anfs.sort();
-            }
-
-            _ => (),
-        };
-
-        self
-    }
-
-    fn reduce(&self) -> Self {
-        match self {
-            ANF::And(anfs) => {
-                let mut anfs = anfs.clone();
-                anfs.dedup(); // remove duplicates
-                match anfs.len() {
-                    0 => ANF::One,
-                    1 => anfs.into_iter().next().unwrap().reduce(),
-                    _ => ANF::And(anfs.iter().map(|v| v.reduce()).collect()),
-                }
-            }
-
-            ANF::Xor(anfs) => {
-                // remove pairs of duplicates
-                let mut reduced = vec![];
-                let mut i = 0;
-                while i < anfs.len() {
-                    let mut count = 1;
-                    while i + count < anfs.len() && anfs[i] == anfs[i + count] {
-                        count += 1;
-                    }
-                    if count % 2 == 1 {
-                        reduced.push(anfs[i].reduce());
-                    }
-                    i += count;
-                }
-
-                match reduced.len() {
-                    0 => ANF::Zero,
-                    1 => reduced.into_iter().next().unwrap().reduce(),
-                    _ => ANF::Xor(reduced),
-                }
-            }
-
-            e => e.clone(),
-        }
-    }
-
-    // Returns a simplified ANF
-    fn simplify(&self) -> Self {
-        let mut flat = self.rules().flatten();
+        // Reduce duplicates (pairs cancel)
         flat.sort();
+        let mut reduced = Vec::new();
+        let mut i = 0;
+        while i < flat.len() {
+            let mut count = 1;
+            while i + count < flat.len() && flat[i] == flat[i + count] {
+                count += 1;
+            }
+            if count % 2 == 1 {
+                reduced.push(flat[i].clone());
+            }
+            i += count;
+        }
 
-        flat.reduce().distribute()
+        match reduced.len() {
+            0 => ANF::Zero,
+            1 => reduced[0].clone(),
+            _ => ANF::Xor(reduced),
+        }
     }
 
-    fn iter_simplify(mut self) -> Self {
-        loop {
-            let simplified = self.simplify();
-            if simplified == self {
-                return self;
+    pub fn and(factors: Vec<ANF>) -> ANF {
+        // First, flatten nested ANDs and filter trivial elements
+        let mut flat = Vec::new();
+        for f in factors {
+            match f {
+                ANF::And(inner) => flat.extend(inner),
+                ANF::One => {}
+                ANF::Zero => return ANF::Zero,
+                other => flat.push(other),
             }
-            self = simplified;
+        }
+
+        // If any child is XOR, distribute AND over XOR
+        if let Some(pos) = flat.iter().position(|f| matches!(f, ANF::Xor(_))) {
+            if let ANF::Xor(xor_terms) = flat.remove(pos) {
+                let mut distributed_terms = Vec::new();
+                for term in xor_terms {
+                    let mut copy = flat.clone();
+                    copy.insert(pos, term);
+                    distributed_terms.push(ANF::and(copy)); // recursive call, simplified incrementally
+                }
+                return ANF::xor(distributed_terms);
+            }
+        }
+
+        // Deduplicate
+        flat.sort();
+        flat.dedup();
+
+        match flat.len() {
+            0 => ANF::One,
+            1 => flat[0].clone(),
+            _ => ANF::And(flat),
         }
     }
 }
@@ -186,33 +100,19 @@ impl Default for ANF {
     }
 }
 
-impl BitXor for &ANF {
+impl BitXor for ANF {
     type Output = ANF;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (ANF::One, ANF::One) => ANF::Zero,
-            (ANF::Zero, x) | (x, ANF::Zero) => x.clone(),
-            (x, y) => {
-                let res = ANF::Xor(vec![x.clone(), y.clone()]);
-                res.iter_simplify()
-            }
-        }
+        ANF::xor(vec![self, rhs])
     }
 }
 
-impl BitAnd for &ANF {
+impl BitAnd for ANF {
     type Output = ANF;
 
     fn bitand(self, rhs: Self) -> Self::Output {
-        match (self, rhs) {
-            (ANF::Zero, _) | (_, ANF::Zero) => ANF::Zero,
-            (ANF::One, x) | (x, ANF::One) => x.clone(),
-            (x, y) => {
-                let res = ANF::And(vec![x.clone(), y.clone()]);
-                res.iter_simplify()
-            }
-        }
+        ANF::and(vec![self, rhs])
     }
 }
 
@@ -241,11 +141,11 @@ impl Display for ANF {
 }
 
 #[derive(Clone, Debug)]
-pub struct ANFExpr<const N: usize> {
-    pub bits: [ANF; N],
+pub struct ANFExpr {
+    pub bits: Vec<ANF>,
 }
 
-impl<const N: usize> Index<usize> for ANFExpr<N> {
+impl Index<usize> for ANFExpr {
     type Output = ANF;
 
     fn index(&self, idx: usize) -> &Self::Output {
@@ -253,257 +153,322 @@ impl<const N: usize> Index<usize> for ANFExpr<N> {
     }
 }
 
-impl<const N: usize> IndexMut<usize> for ANFExpr<N> {
+impl IndexMut<usize> for ANFExpr {
     fn index_mut(&mut self, idx: usize) -> &mut Self::Output {
         &mut self.bits[idx]
     }
 }
 
-impl<const N: usize> BitXor for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl BitXor for ANFExpr {
+    type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
         Self::Output {
-            bits: from_fn(|i| &self[i] ^ &rhs[i]),
+            bits: self
+                .bits
+                .into_iter()
+                .zip(rhs.bits)
+                .map(|(l, r)| l ^ r)
+                .collect(),
         }
     }
 }
 
-impl<const N: usize> BitAnd for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl BitAnd for ANFExpr {
+    type Output = Self;
 
     fn bitand(self, rhs: Self) -> Self::Output {
         Self::Output {
-            bits: from_fn(|i| &self[i] & &rhs[i]),
+            bits: self
+                .bits
+                .into_iter()
+                .zip(rhs.bits)
+                .map(|(l, r)| l & r)
+                .collect(),
         }
     }
 }
 
-impl<const N: usize> BitOr for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl BitOr for ANFExpr {
+    type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
-        &(self & rhs) ^ &(self ^ rhs)
+        (self.clone() & rhs.clone()) ^ (self ^ rhs)
     }
 }
 
-impl<const N: usize> Add for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Add for ANFExpr {
+    type Output = ANFExpr;
 
     fn add(self, rhs: Self) -> Self::Output {
         let mut c = ANF::Zero;
 
         Self::Output {
-            bits: from_fn(|i| {
-                let xi = &self[i];
-                let yi = &rhs[i];
+            bits: self
+                .bits
+                .into_iter()
+                .zip(rhs.bits)
+                .map(|(xi, yi)| {
+                    // sum bit = xi ^ yi ^ c
+                    let r = ANF::xor(vec![xi.clone(), yi.clone(), c.clone()]);
 
-                let r = &(xi ^ yi) ^ &c;
+                    // new carry = (xi & yi) ^ (xi & c) ^ (yi & c)
+                    c = ANF::xor(vec![
+                        xi.clone() & yi.clone(),
+                        xi.clone() & c.clone(),
+                        yi & c.clone(),
+                    ]);
 
-                c = &(xi & yi) ^ &(&c & &(xi ^ yi));
-
-                r
-            }),
+                    r
+                })
+                .collect(),
         }
     }
 }
 
-impl<const N: usize> Shl<u8> for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Shl<u128> for ANFExpr {
+    type Output = Self;
 
-    fn shl(self, rhs: u8) -> Self::Output {
+    fn shl(self, rhs: u128) -> Self::Output {
+        let n = self.bits.len();
+
         Self::Output {
-            bits: from_fn(|i| {
-                let i = i + rhs as usize;
-                if i < N { self[i].clone() } else { ANF::Zero }
-            }),
+            bits: self
+                .bits
+                .into_iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let i = i + rhs as usize;
+                    if i < n { a } else { ANF::Zero }
+                })
+                .collect(),
         }
     }
 }
 
-impl<const N: usize> Shr<u8> for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Shr<u128> for ANFExpr {
+    type Output = Self;
 
-    fn shr(self, rhs: u8) -> Self::Output {
+    fn shr(self, rhs: u128) -> Self::Output {
         let c = rhs as usize;
         Self::Output {
-            bits: from_fn(|i| {
-                if i >= c {
-                    self[i - c].clone()
-                } else {
-                    ANF::Zero
-                }
-            }),
+            bits: self
+                .bits
+                .into_iter()
+                .enumerate()
+                .map(|(i, a)| if i >= c { a } else { ANF::Zero })
+                .collect(),
         }
     }
 }
 
-impl<const N: usize> Mul<&ANF> for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Mul<ANF> for ANFExpr {
+    type Output = ANFExpr;
 
-    fn mul(self, rhs: &ANF) -> Self::Output {
+    fn mul(self, rhs: ANF) -> Self::Output {
         Self::Output {
-            bits: from_fn(|i| &self[i] & &rhs),
+            bits: self.bits.into_iter().map(|a| a & rhs.clone()).collect(),
         }
     }
 }
 
-impl<const N: usize> Mul for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Mul for ANFExpr {
+    type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        let mut sum = ANFExpr::<N> {
-            bits: from_fn(|_| ANF::Zero),
-        };
+        let n = self.bits.len();
 
-        for i in 0..N {
-            sum = &sum + &(&(self << i as u8) * &rhs[i])
+        let mut sum = ANFExpr::zero(n);
+        let mut carry = ANFExpr::zero(n);
+
+        for i in 0..n {
+            if rhs[i] != ANF::Zero {
+                let shifted = self.clone() << i as u128;
+
+                // For each bit position: CSA combine (sum, carry, shifted)
+                let mut new_sum = ANFExpr::zero(n);
+                let mut new_carry = ANFExpr::zero(n);
+
+                for j in 0..n {
+                    let a = sum.bits[j].clone();
+                    let b = carry.bits[j].clone();
+                    let c = shifted.bits.get(j).cloned().unwrap_or(ANF::Zero);
+
+                    // Carry-save adder logic
+                    new_sum.bits[j] = ANF::xor(vec![a.clone(), b.clone(), c.clone()]);
+                    new_carry.bits[j] = ANF::xor(vec![
+                        ANF::and(vec![a.clone(), b.clone()]),
+                        ANF::and(vec![a.clone(), c.clone()]),
+                        ANF::and(vec![b.clone(), c.clone()]),
+                    ]);
+                }
+
+                sum = new_sum;
+                // left shift carry bits by 1
+                carry = new_carry << 1;
+            }
         }
 
-        sum
+        // Final carry-propagate addition
+        sum + carry
     }
 }
 
-impl<const N: usize> Not for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Not for ANFExpr {
+    type Output = Self;
 
     fn not(self) -> Self::Output {
         Self::Output {
-            bits: from_fn(|i| &self[i] ^ &ANF::One),
+            bits: self.bits.into_iter().map(|anf| anf ^ ANF::One).collect(),
         }
     }
 }
 
-impl<const N: usize> Neg for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Neg for ANFExpr {
+    type Output = ANFExpr;
 
     fn neg(self) -> Self::Output {
-        &!self + &ANFExpr::<N>::one()
+        let n = self.bits.len();
+        !self + ANFExpr::one(n)
     }
 }
 
-impl<const N: usize> Sub for &ANFExpr<N> {
-    type Output = ANFExpr<N>;
+impl Sub for ANFExpr {
+    type Output = ANFExpr;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        &(self + &!rhs) + &Self::Output::one()
-    }
-}
+        let mut b = ANF::Zero;
 
-impl<const N: usize> Default for ANFExpr<N> {
-    fn default() -> Self {
-        Self {
-            bits: from_fn(|_| ANF::default().clone()),
+        Self::Output {
+            bits: self
+                .bits
+                .into_iter()
+                .zip(rhs.bits)
+                .map(|(xi, yi)| {
+                    // difference bit = xi ^ yi ^ b
+                    let d = ANF::xor(vec![xi.clone(), yi.clone(), b.clone()]);
+
+                    // borrow = (!xi & yi) | (b & !(xi ^ yi))
+                    let not_xi = ANF::xor(vec![xi.clone(), ANF::One]);
+                    let not_xi_xor_yi = ANF::xor(vec![xi.clone(), yi.clone()]);
+                    let not_xor = ANF::xor(vec![not_xi_xor_yi, ANF::One]);
+
+                    let term1 = ANF::and(vec![not_xi, yi.clone()]);
+                    let term2 = ANF::and(vec![b.clone(), not_xor]);
+
+                    b = ANF::xor(vec![
+                        term1.clone(),
+                        term2.clone(),
+                        ANF::and(vec![term1, term2]),
+                    ]);
+
+                    d
+                })
+                .collect(),
         }
     }
 }
 
-impl<const N: usize, T: Into<u128>> From<T> for ANFExpr<N> {
-    fn from(value: T) -> Self {
-        let mut expr = Self::default();
+impl<T: Into<u128>> From<(T, usize)> for ANFExpr {
+    fn from((value, n): (T, usize)) -> Self {
         let value: u128 = value.into();
 
-        for i in 0..N {
-            expr.bits[i] = if ((value >> i) & 1) == 1 {
-                ANF::One
-            } else {
-                ANF::Zero
-            };
-        }
-
-        expr
+        ANFExpr::from_value(value, n)
     }
 }
 
-impl<const N: usize> From<Expr> for ANFExpr<N> {
-    fn from(value: Expr) -> Self {
+impl From<(Expr, usize)> for ANFExpr {
+    fn from((value, n): (Expr, usize)) -> Self {
         match value {
             Expr::Var(v) => Self {
-                bits: from_fn(|i| ANF::Var(v, i)),
+                bits: (0..n).map(|i| ANF::Var(v, i)).collect(),
             },
 
-            Expr::Const(c) => c.into(),
+            Expr::Const(c) => (c, n).into(),
 
-            Expr::Times(expr::Binop { left, right }) => {
-                let left: Self = (*left).into();
-                let right: Self = (*right).into();
+            Expr::Times(Binop { left, right }) => {
+                let l: Self = (*left, n).into();
+                let r: Self = (*right, n).into();
 
-                &left * &right
+                l * r
             }
 
-            Expr::Plus(expr::Binop { left, right }) => {
-                let left: Self = (*left).into();
-                let right: Self = (*right).into();
+            Expr::Plus(Binop { left, right }) => {
+                let l: Self = (*left, n).into();
+                let r: Self = (*right, n).into();
 
-                &left + &right
+                l + r
             }
 
-            Expr::Minus(expr::Binop { left, right }) => {
-                let left: Self = (*left).into();
-                let right: Self = (*right).into();
+            Expr::Minus(Binop { left, right }) => {
+                let l: Self = (*left, n).into();
+                let r: Self = (*right, n).into();
 
-                &left - &right
+                l - r
             }
 
             Expr::Not(expr) => {
-                let expr: Self = (*expr).into();
-                !&expr
+                let expr: Self = (*expr, n).into();
+                !expr
             }
 
-            Expr::And(binop) => {
-                let l: Self = (*binop.left).into();
-                let r: Self = (*binop.right).into();
-                &l & &r
+            Expr::And(Binop { left, right }) => {
+                let l: Self = (*left, n).into();
+                let r: Self = (*right, n).into();
+                l & r
             }
 
-            Expr::Xor(binop) => {
-                let l: Self = (*binop.left).into();
-                let r: Self = (*binop.right).into();
-                &l ^ &r
+            Expr::Xor(Binop { left, right }) => {
+                let l: Self = (*left, n).into();
+                let r: Self = (*right, n).into();
+
+                l ^ r
             }
 
-            Expr::Or(binop) => {
-                let l: Self = (*binop.left).into();
-                let r: Self = (*binop.right).into();
+            Expr::Or(Binop { left, right }) => {
+                let l: Self = (*left, n).into();
+                let r: Self = (*right, n).into();
 
-                &l | &r
+                l | r
             }
 
-            Expr::Lshift(expr::Binop { left, right }) => {
-                let left: Self = (*left).into();
+            Expr::Lshift(Binop { left, right }) => {
+                let left: Self = (*left, n).into();
 
                 if let Expr::Const(c) = *right {
-                    &left << c
+                    left << c as u128
                 } else {
                     todo!()
                 }
             }
 
-            Expr::Rshift(expr::Binop { left, right }) => {
-                let left: Self = (*left).into();
+            Expr::Rshift(Binop { left, right }) => {
+                let left: Self = (*left, n).into();
 
                 if let Expr::Const(c) = *right {
-                    &left >> c
+                    left >> c as u128
                 } else {
                     todo!()
                 }
             }
 
-            Expr::RshiftS(expr::Binop { left, right }) => {
-                let left: Self = (*left).into();
+            Expr::RshiftS(Binop { left, right }) => {
+                let left: Self = (*left, n).into();
 
-                let sign_bit = left[N - 1].clone();
+                let sign_bit = left[n - 1].clone();
 
                 if let Expr::Const(c) = *right {
                     Self {
-                        bits: from_fn(|i| {
-                            let i = i + c as usize;
-                            if i < N {
-                                left[i].clone()
-                            } else {
-                                sign_bit.clone()
-                            }
-                        }),
+                        bits: (0..n)
+                            .map(|i| {
+                                let i = i + c as usize;
+                                if i < n {
+                                    left[i].clone()
+                                } else {
+                                    sign_bit.clone()
+                                }
+                            })
+                            .collect(),
                     }
                 } else {
                     todo!()
@@ -515,30 +480,72 @@ impl<const N: usize> From<Expr> for ANFExpr<N> {
     }
 }
 
-impl<const N: usize> Display for ANFExpr<N> {
+impl Display for ANFExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{:?}", self.bits))
     }
 }
 
-impl<const N: usize> ANFExpr<N> {
-    pub fn one() -> Self {
+impl ANFExpr {
+    pub fn zero(n: usize) -> Self {
         Self {
-            bits: from_fn(|i| if i == 0 { ANF::One } else { ANF::Zero }),
+            bits: vec![ANF::Zero; n],
         }
     }
 
-    pub fn var(id: usize) -> Self {
+    pub fn one(n: usize) -> Self {
+        let mut res = Self::zero(n);
+        res[0] = ANF::One;
+        res
+    }
+
+    pub fn from_value(value: u128, n: usize) -> Self {
+        let value: u128 = value.into();
+
         Self {
-            bits: from_fn(|i| ANF::Var(id, i)),
+            bits: (0..n)
+                .map(|i| {
+                    if ((value >> i) & 1) == 1 {
+                        ANF::One
+                    } else {
+                        ANF::Zero
+                    }
+                })
+                .collect(),
         }
+    }
+
+    pub fn var(id: usize, n: usize) -> Self {
+        Self {
+            bits: (0..n).map(|i| ANF::Var(id, i)).collect(),
+        }
+    }
+
+    pub fn eval(&self, vars: &Vec<u128>) -> u128 {
+        let mut res = 0;
+
+        for (i, anf) in self.bits.iter().enumerate() {
+            res |= anf.eval(vars) << i
+        }
+
+        res
+    }
+
+    pub fn is_int(&self) -> bool {
+        for anf in &self.bits {
+            match anf {
+                ANF::One | ANF::Zero => (),
+                _ => return false,
+            }
+        }
+        return true;
     }
 
     pub fn to_int(&self) -> Option<u128> {
         let mut res = 0;
 
-        for i in 0..N {
-            match self[i] {
+        for (i, anf) in self.bits.iter().enumerate() {
+            match anf {
                 ANF::One => res |= 1 << i,
                 ANF::Zero => (),
                 _ => return None,
@@ -546,5 +553,15 @@ impl<const N: usize> ANFExpr<N> {
         }
 
         Some(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*; // import the outer module
+
+    #[test]
+    fn test_add_positive() {
+        assert_eq!(add(2, 3), 5);
     }
 }
