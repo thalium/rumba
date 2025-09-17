@@ -15,6 +15,12 @@ pub enum ANF {
 }
 
 impl ANF {
+    pub fn size(&self) -> usize {
+        match self {
+            ANF::Xor(anfs) | ANF::And(anfs) => anfs.iter().map(|a| a.size()).sum(),
+            ANF::One | ANF::Zero | ANF::Var(_, _) => 1,
+        }
+    }
     pub fn eval(&self, vars: &Vec<u128>) -> u128 {
         match self {
             ANF::Xor(anfs) => anfs.iter().map(|a| a.eval(vars)).fold(0, |x, y| x ^ y),
@@ -566,6 +572,10 @@ impl ANFExpr {
         }
 
         Some(res)
+    }
+
+    pub fn size(&self) -> usize {
+        self.bits.iter().map(|a| a.size()).sum()
     }
 }
 

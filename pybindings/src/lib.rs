@@ -38,6 +38,10 @@ impl PyANF {
             inner: self.inner.clone() ^ other.inner.clone(),
         }
     }
+
+    fn size(&self) -> usize {
+        self.inner.size()
+    }
 }
 
 // Macro to expose ANFExpr<N> to Python
@@ -217,6 +221,7 @@ impl PyANFExpr {
             ))
         }
     }
+
     fn __rand__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
         self.__and__(other)
     }
@@ -240,6 +245,21 @@ impl PyANFExpr {
         self.__or__(other)
     }
 
+    fn __eq__(&self, other: Bound<'_, PyAny>) -> PyResult<bool> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(self.inner.bits == rhs.inner.bits)
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(self.inner.bits == ANFExpr::from_value(rhs_int, self.inner.bits.len()).bits)
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be ANFExpr or int",
+            ))
+        }
+    }
+    fn __req__(&self, other: Bound<'_, PyAny>) -> PyResult<bool> {
+        self.__eq__(other)
+    }
+
     fn __invert__(&self) -> Self {
         Self {
             inner: !self.inner.clone(),
@@ -257,10 +277,15 @@ impl PyANFExpr {
             inner: self.inner.clone() << shift,
         }
     }
+
     fn __rshift__(&self, shift: u128) -> Self {
         Self {
             inner: self.inner.clone() >> shift,
         }
+    }
+
+    fn size(&self) -> usize {
+        self.inner.size()
     }
 }
 
