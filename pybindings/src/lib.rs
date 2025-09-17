@@ -1,7 +1,240 @@
 use mbalib::anf::ANF;
 use mbalib::anf::ANFExpr;
+use mbalib::expr::Expr;
 use pyo3::exceptions;
 use pyo3::prelude::*;
+
+#[pyclass]
+#[derive(Clone)]
+struct PyExpr {
+    inner: Expr,
+}
+
+#[pymethods]
+impl PyExpr {
+    #[new]
+    fn new(obj: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+        if let Some(py_obj) = obj {
+            if let Ok(value) = py_obj.extract::<u128>() {
+                Ok(Self {
+                    inner: value.into(),
+                })
+            } else {
+                Err(pyo3::exceptions::PyTypeError::new_err(
+                    "Expected an int for Expr constructor",
+                ))
+            }
+        } else {
+            Ok(Self {
+                inner: Expr::Const(0),
+            })
+        }
+    }
+
+    #[staticmethod]
+    fn var(id: usize) -> PyResult<Self> {
+        Ok(Self {
+            inner: Expr::Var(id),
+        })
+    }
+
+    fn to_int(&self) -> PyResult<u128> {
+        match self.inner {
+            Expr::Const(c) => Ok(c),
+            _ => Err(pyo3::exceptions::PyTypeError::new_err("Not an int")),
+        }
+    }
+
+    fn simplify(&mut self) {
+        self.inner = self.inner.clone().simplify();
+    }
+
+    fn anf(&mut self, n: usize) -> PyANFExpr {
+        PyANFExpr {
+            inner: (self.inner.clone(), n).into(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        self.inner.size()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{}", self.inner)
+    }
+    fn __str__(&self) -> String {
+        format!("{}", self.inner)
+    }
+
+    // Arithmetic operators
+    fn __add__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(Self {
+                inner: self.inner.clone() + rhs.inner.clone(),
+            })
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(Self {
+                inner: self.inner.clone() + rhs_int.into(),
+            })
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be Expr or int",
+            ))
+        }
+    }
+
+    fn __radd__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__add__(other)
+    }
+
+    fn __sub__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(Self {
+                inner: self.inner.clone() - rhs.inner.clone(),
+            })
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(Self {
+                inner: self.inner.clone() - rhs_int.into(),
+            })
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be Expr or int",
+            ))
+        }
+    }
+
+    fn __rsub__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(Self {
+                inner: rhs.inner.clone() - self.inner.clone(),
+            })
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(Self {
+                inner: Expr::Const(rhs_int) - self.inner.clone(),
+            })
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be Expr or int",
+            ))
+        }
+    }
+
+    fn __mul__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(Self {
+                inner: self.inner.clone() * rhs.inner.clone(),
+            })
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(Self {
+                inner: self.inner.clone() * rhs_int.into(),
+            })
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be Expr or int",
+            ))
+        }
+    }
+    fn __rmul__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__mul__(other)
+    }
+
+    fn __xor__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(Self {
+                inner: self.inner.clone() ^ rhs.inner.clone(),
+            })
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(Self {
+                inner: self.inner.clone() ^ rhs_int.into(),
+            })
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be Expr or int",
+            ))
+        }
+    }
+    fn __rxor__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__xor__(other)
+    }
+
+    fn __and__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(Self {
+                inner: self.inner.clone() & rhs.inner.clone(),
+            })
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(Self {
+                inner: self.inner.clone() & rhs_int.into(),
+            })
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be Expr or int",
+            ))
+        }
+    }
+
+    fn __rand__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__and__(other)
+    }
+
+    fn __or__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(Self {
+                inner: self.inner.clone() | rhs.inner.clone(),
+            })
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(Self {
+                inner: self.inner.clone() | rhs_int.into(),
+            })
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be Expr or int",
+            ))
+        }
+    }
+    fn __ror__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__or__(other)
+    }
+
+    fn __eq__(&self, other: Bound<'_, PyAny>) -> PyResult<bool> {
+        if let Ok(rhs) = other.extract::<Self>() {
+            Ok(self.inner == rhs.inner)
+        } else if let Ok(rhs_int) = other.extract::<u128>() {
+            Ok(self.inner == rhs_int.into())
+        } else {
+            Err(exceptions::PyTypeError::new_err(
+                "Operand must be ANFExpr or int",
+            ))
+        }
+    }
+    fn __req__(&self, other: Bound<'_, PyAny>) -> PyResult<bool> {
+        self.__eq__(other)
+    }
+
+    fn __invert__(&self) -> Self {
+        Self {
+            inner: !self.inner.clone(),
+        }
+    }
+
+    fn __neg__(&self) -> Self {
+        Self {
+            inner: -self.inner.clone(),
+        }
+    }
+
+    fn __lshift__(&self, shift: u128) -> Self {
+        Self {
+            inner: self.inner.clone() << Expr::Const(shift),
+        }
+    }
+
+    fn __rshift__(&self, shift: u128) -> Self {
+        Self {
+            inner: self.inner.clone() >> Expr::Const(shift),
+        }
+    }
+}
 
 #[pyclass]
 #[derive(Clone, Default)]
@@ -296,4 +529,7 @@ mod mba {
 
     #[pymodule_export]
     use super::PyANFExpr;
+
+    #[pymodule_export]
+    use super::PyExpr;
 }

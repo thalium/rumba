@@ -1,6 +1,5 @@
-use crate::expr::{self, Binop, Expr};
+use crate::expr::Expr;
 use std::{
-    array::from_fn,
     fmt::{Display, Write},
     ops::{Add, BitAnd, BitOr, BitXor, Index, IndexMut, Mul, Neg, Not, Shl, Shr, Sub},
 };
@@ -405,25 +404,22 @@ impl From<(Expr, usize)> for ANFExpr {
 
             Expr::Const(c) => (c, n).into(),
 
-            Expr::Times(Binop { left, right }) => {
-                let l: Self = (*left, n).into();
-                let r: Self = (*right, n).into();
-
-                l * r
+            Expr::Mul(terms) => {
+                let mut terms = terms.into_iter().map(|t| (t, n).into());
+                let first = terms.next().unwrap();
+                terms.fold(first, |a, b| a * b)
             }
 
-            Expr::Plus(Binop { left, right }) => {
-                let l: Self = (*left, n).into();
-                let r: Self = (*right, n).into();
-
-                l + r
+            Expr::Add(terms) => {
+                let mut terms = terms.into_iter().map(|t| (t, n).into());
+                let first = terms.next().unwrap();
+                terms.fold(first, |a, b| a + b)
             }
 
-            Expr::Minus(Binop { left, right }) => {
-                let l: Self = (*left, n).into();
-                let r: Self = (*right, n).into();
-
-                l - r
+            Expr::Sub(terms) => {
+                let mut terms = terms.into_iter().map(|t| (t, n).into());
+                let first = terms.next().unwrap();
+                terms.fold(first, |a, b| a - b)
             }
 
             Expr::Not(expr) => {
@@ -431,64 +427,44 @@ impl From<(Expr, usize)> for ANFExpr {
                 !expr
             }
 
-            Expr::And(Binop { left, right }) => {
-                let l: Self = (*left, n).into();
-                let r: Self = (*right, n).into();
-                l & r
+            Expr::And(terms) => {
+                let mut terms = terms.into_iter().map(|t| (t, n).into());
+                let first = terms.next().unwrap();
+                terms.fold(first, |a, b| a & b)
             }
 
-            Expr::Xor(Binop { left, right }) => {
-                let l: Self = (*left, n).into();
-                let r: Self = (*right, n).into();
-
-                l ^ r
+            Expr::Xor(terms) => {
+                let mut terms = terms.into_iter().map(|t| (t, n).into());
+                let first = terms.next().unwrap();
+                terms.fold(first, |a, b| a ^ b)
             }
 
-            Expr::Or(Binop { left, right }) => {
-                let l: Self = (*left, n).into();
-                let r: Self = (*right, n).into();
-
-                l | r
+            Expr::Or(terms) => {
+                let mut terms = terms.into_iter().map(|t| (t, n).into());
+                let first = terms.next().unwrap();
+                terms.fold(first, |a, b| a | b)
             }
 
-            Expr::Lshift(Binop { left, right }) => {
-                let left: Self = (*left, n).into();
+            Expr::Shl(terms) => {
+                let left = terms[0].clone();
+                let right = terms[1].clone();
+                let left: Self = (left, n).into();
 
-                if let Expr::Const(c) = *right {
+                if let Expr::Const(c) = right {
                     left << c as u128
                 } else {
                     todo!()
                 }
             }
 
-            Expr::Rshift(Binop { left, right }) => {
-                let left: Self = (*left, n).into();
+            Expr::Shr(terms) => {
+                let left = terms[0].clone();
+                let right = terms[1].clone();
 
-                if let Expr::Const(c) = *right {
+                let left: Self = (left, n).into();
+
+                if let Expr::Const(c) = right {
                     left >> c as u128
-                } else {
-                    todo!()
-                }
-            }
-
-            Expr::RshiftS(Binop { left, right }) => {
-                let left: Self = (*left, n).into();
-
-                let sign_bit = left[n - 1].clone();
-
-                if let Expr::Const(c) = *right {
-                    Self {
-                        bits: (0..n)
-                            .map(|i| {
-                                let i = i + c as usize;
-                                if i < n {
-                                    left[i].clone()
-                                } else {
-                                    sign_bit.clone()
-                                }
-                            })
-                            .collect(),
-                    }
                 } else {
                     todo!()
                 }
