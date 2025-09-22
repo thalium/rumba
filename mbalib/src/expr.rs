@@ -4,6 +4,23 @@ use std::{
     u128, vec,
 };
 
+use crate::expr;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Binop {
+    pub left: Box<Expr>,
+    pub right: Box<Expr>,
+}
+
+impl Binop {
+    pub fn new(left: Expr, right: Expr) -> Self {
+        Self {
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Expr {
     Var(usize),
@@ -18,21 +35,23 @@ pub enum Expr {
     And(Vec<Expr>),
     Or(Vec<Expr>),
     Xor(Vec<Expr>),
-    Shl(Vec<Expr>),
-    Shr(Vec<Expr>),
-    RshiftS(Vec<Expr>),
+
+    // Shifts
+    Shl(Binop),
+    Shr(Binop),
+    RshiftS(Binop),
 
     // Comp
-    Le(Vec<Expr>),
-    Lt(Vec<Expr>),
-    Ge(Vec<Expr>),
-    Gt(Vec<Expr>),
-    LeS(Vec<Expr>),
-    LtS(Vec<Expr>),
-    GeS(Vec<Expr>),
-    GtS(Vec<Expr>),
-    Ne(Vec<Expr>),
-    Eq(Vec<Expr>),
+    Le(Binop),
+    Lt(Binop),
+    Ge(Binop),
+    Gt(Binop),
+    LeS(Binop),
+    LtS(Binop),
+    GeS(Binop),
+    GtS(Binop),
+    Ne(Binop),
+    Eq(Binop),
 
     // Arithmetic
     Add(Vec<Expr>),
@@ -68,7 +87,7 @@ impl Shl for Expr {
     type Output = Expr;
 
     fn shl(self, rhs: Self) -> Self::Output {
-        Expr::Shl(vec![self, rhs])
+        Expr::Shl(Binop::new(self, rhs))
     }
 }
 
@@ -76,7 +95,7 @@ impl Shr for Expr {
     type Output = Expr;
 
     fn shr(self, rhs: Self) -> Self::Output {
-        Expr::Shr(vec![self, rhs])
+        Expr::Shr(Binop::new(self, rhs))
     }
 }
 
@@ -124,23 +143,27 @@ pub type TruthTable = [u128; 256 * 256];
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let to_string = |e: &Expr| e.parenthesize(self, e.to_string());
+
         let mut join = |exprs: &Vec<Expr>, c: &str| {
             write!(
                 f,
-                "({})",
-                exprs
-                    .iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<String>>()
-                    .join(c)
+                "{}",
+                exprs.iter().map(to_string).collect::<Vec<String>>().join(c)
             )
         };
 
         match self {
             Expr::Var(i) => write!(f, "v{}", i),
-            Expr::Const(c) => write!(f, "{}", c),
-            Expr::Not(expr) => write!(f, "!{}", expr.to_string()),
-            Expr::Neg(expr) => write!(f, "-{}", expr.to_string()),
+            Expr::Const(c) => {
+                if *c as i128 >= 0 {
+                    write!(f, "{}", c)
+                } else {
+                    write!(f, "({})", *c as i128)
+                }
+            }
+            Expr::Not(expr) => write!(f, "!{}", to_string(expr)),
+            Expr::Neg(expr) => write!(f, "-{}", to_string(expr)),
 
             Expr::And(exprs) => join(exprs, " & "),
             Expr::Or(exprs) => join(exprs, " | "),
@@ -149,19 +172,19 @@ impl fmt::Display for Expr {
             Expr::Sub(exprs) => join(exprs, " - "),
             Expr::Mul(exprs) => join(exprs, " * "),
 
-            Expr::Shl(exprs) => join(exprs, " << "),
-            Expr::Shr(exprs) => join(exprs, " >> "),
-            Expr::RshiftS(exprs) => join(exprs, " >>s "),
-            Expr::Le(exprs) => join(exprs, " <= "),
-            Expr::Lt(exprs) => join(exprs, " < "),
-            Expr::Ge(exprs) => join(exprs, " >= "),
-            Expr::Gt(exprs) => join(exprs, " > "),
-            Expr::LeS(exprs) => join(exprs, " <=s "),
-            Expr::LtS(exprs) => join(exprs, " <s "),
-            Expr::GeS(exprs) => join(exprs, " >=s "),
-            Expr::GtS(exprs) => join(exprs, " >s "),
-            Expr::Ne(exprs) => join(exprs, " != "),
-            Expr::Eq(exprs) => join(exprs, " == "),
+            _ => todo!(), // Expr::Shl(exprs) => join(exprs, " << "),
+                          // Expr::Shr(exprs) => join(exprs, " >> "),
+                          // Expr::RshiftS(exprs) => join(exprs, " >>s "),
+                          // Expr::Le(exprs) => join(exprs, " <= "),
+                          // Expr::Lt(exprs) => join(exprs, " < "),
+                          // Expr::Ge(exprs) => join(exprs, " >= "),
+                          // Expr::Gt(exprs) => join(exprs, " > "),
+                          // Expr::LeS(exprs) => join(exprs, " <=s "),
+                          // Expr::LtS(exprs) => join(exprs, " <s "),
+                          // Expr::GeS(exprs) => join(exprs, " >=s "),
+                          // Expr::GtS(exprs) => join(exprs, " >s "),
+                          // Expr::Ne(exprs) => join(exprs, " != "),
+                          // Expr::Eq(exprs) => join(exprs, " == "),
         }
     }
 }
@@ -181,71 +204,183 @@ impl Expr {
 
             Expr::Not(expr) | Expr::Neg(expr) => expr.size(),
 
+            Expr::Shl(Binop { left, right })
+            | Expr::Shr(Binop { left, right })
+            | Expr::RshiftS(Binop { left, right })
+            | Expr::Le(Binop { left, right })
+            | Expr::Lt(Binop { left, right })
+            | Expr::Ge(Binop { left, right })
+            | Expr::Gt(Binop { left, right })
+            | Expr::LeS(Binop { left, right })
+            | Expr::LtS(Binop { left, right })
+            | Expr::GeS(Binop { left, right })
+            | Expr::GtS(Binop { left, right })
+            | Expr::Ne(Binop { left, right })
+            | Expr::Eq(Binop { left, right }) => left.size() + right.size(),
+
             Expr::And(exprs)
             | Expr::Or(exprs)
             | Expr::Xor(exprs)
-            | Expr::Shl(exprs)
-            | Expr::Shr(exprs)
-            | Expr::RshiftS(exprs)
-            | Expr::Le(exprs)
-            | Expr::Lt(exprs)
-            | Expr::Ge(exprs)
-            | Expr::Gt(exprs)
-            | Expr::LeS(exprs)
-            | Expr::LtS(exprs)
-            | Expr::GeS(exprs)
-            | Expr::GtS(exprs)
-            | Expr::Ne(exprs)
-            | Expr::Eq(exprs)
             | Expr::Add(exprs)
             | Expr::Sub(exprs)
             | Expr::Mul(exprs) => exprs.iter().map(|e| e.size()).sum(),
         }
     }
 
-    // pub fn eval(&self, vars: &[u128]) -> u128 {
-    //     match self {
-    //         Expr::Var(i) => vars[*i],
-    //         Expr::Const(c) => *c,
-    //         Expr::And(b) => b.left.eval(vars) & b.right.eval(vars),
-    //         Expr::Or(b) => b.left.eval(vars) | b.right.eval(vars),
-    //         Expr::Xor(b) => b.left.eval(vars) ^ b.right.eval(vars),
-    //         Expr::Not(e) => !e.eval(vars),
-    //         Expr::Shl(b) => b.left.eval(vars).wrapping_shl(b.right.eval(vars) as u32),
-    //         Expr::Shr(b) => b.left.eval(vars).wrapping_shr(b.right.eval(vars) as u32),
-    //         Expr::RshiftS(b) => {
-    //             let l = b.left.eval(vars) as i8;
-    //             let r = b.right.eval(vars) as u32;
-    //             l.wrapping_shr(r) as u8
-    //         }
-    //         Expr::Le(b) => (b.left.eval(vars) <= b.right.eval(vars)) as u8,
-    //         Expr::Lt(b) => (b.left.eval(vars) < b.right.eval(vars)) as u8,
-    //         Expr::Ge(b) => (b.left.eval(vars) >= b.right.eval(vars)) as u8,
-    //         Expr::Gt(b) => (b.left.eval(vars) > b.right.eval(vars)) as u8,
-    //         Expr::Ne(b) => (b.left.eval(vars) != b.right.eval(vars)) as u8,
-    //         Expr::Eq(b) => (b.left.eval(vars) == b.right.eval(vars)) as u8,
-    //         Expr::LeS(b) => ((b.left.eval(vars) as i8) <= (b.right.eval(vars) as i8)) as u8,
-    //         Expr::LtS(b) => ((b.left.eval(vars) as i8) < (b.right.eval(vars) as i8)) as u8,
-    //         Expr::GeS(b) => ((b.left.eval(vars) as i8) >= (b.right.eval(vars) as i8)) as u8,
-    //         Expr::GtS(b) => ((b.left.eval(vars) as i8) > (b.right.eval(vars) as i8)) as u8,
-    //         Expr::Add(b) => b.left.eval(vars).wrapping_add(b.right.eval(vars)),
-    //         Expr::Sub(b) => b.left.eval(vars).wrapping_sub(b.right.eval(vars)),
-    //         Expr::Mul(b) => b.left.eval(vars).wrapping_mul(b.right.eval(vars)),
-    //         Expr::Neg(expr) => !expr.eval(vars),
-    //     }
-    // }
+    pub fn eval(&self, vars: &[u128]) -> u128 {
+        match self {
+            Expr::Var(i) => vars[*i],
+            Expr::Const(c) => *c,
 
-    // pub fn truth_table(&self) -> TruthTable {
-    //     let mut tt = [0u128; 256 * 256];
+            Expr::And(exprs) => exprs
+                .iter()
+                .map(|e| e.eval(vars))
+                .fold(u128::MAX, |x, y| x & y),
 
-    //     for x in 0..=255u128 {
-    //         for y in 0..=255u128 {
-    //             tt[(x as usize) * 256 + (y as usize)] = self.eval(&[x, y]);
-    //         }
-    //     }
+            Expr::Or(exprs) => exprs.iter().map(|e| e.eval(vars)).fold(0, |x, y| x | y),
 
-    //     tt
-    // }
+            Expr::Xor(exprs) => exprs.iter().map(|e| e.eval(vars)).fold(0, |x, y| x ^ y),
+
+            Expr::Add(exprs) => exprs
+                .iter()
+                .map(|e| e.eval(vars))
+                .fold(0, |x, y| x.wrapping_add(y)),
+
+            Expr::Sub(exprs) => {
+                let mut iter = exprs.iter().map(|e| e.eval(vars));
+                if let Some(first) = iter.next() {
+                    iter.fold(first, |x, y| x.wrapping_sub(y))
+                } else {
+                    0
+                }
+            }
+
+            Expr::Mul(exprs) => exprs
+                .iter()
+                .map(|e| e.eval(vars))
+                .fold(1, |x, y| x.wrapping_mul(y)),
+
+            Expr::Not(e) => !e.eval(vars),
+
+            Expr::Shl(b) => b.left.eval(vars).wrapping_shl(b.right.eval(vars) as u32),
+            Expr::Shr(b) => b.left.eval(vars).wrapping_shr(b.right.eval(vars) as u32),
+
+            Expr::RshiftS(b) => {
+                let l = b.left.eval(vars) as i128;
+                let r = b.right.eval(vars) as u32;
+                (l >> r) as u128
+            }
+
+            Expr::Le(b) => (b.left.eval(vars) <= b.right.eval(vars)) as u128,
+            Expr::Lt(b) => (b.left.eval(vars) < b.right.eval(vars)) as u128,
+            Expr::Ge(b) => (b.left.eval(vars) >= b.right.eval(vars)) as u128,
+            Expr::Gt(b) => (b.left.eval(vars) > b.right.eval(vars)) as u128,
+            Expr::Ne(b) => (b.left.eval(vars) != b.right.eval(vars)) as u128,
+            Expr::Eq(b) => (b.left.eval(vars) == b.right.eval(vars)) as u128,
+
+            Expr::LeS(b) => ((b.left.eval(vars) as i128) <= (b.right.eval(vars) as i128)) as u128,
+            Expr::LtS(b) => ((b.left.eval(vars) as i128) < (b.right.eval(vars) as i128)) as u128,
+            Expr::GeS(b) => ((b.left.eval(vars) as i128) >= (b.right.eval(vars) as i128)) as u128,
+            Expr::GtS(b) => ((b.left.eval(vars) as i128) > (b.right.eval(vars) as i128)) as u128,
+
+            Expr::Neg(expr) => !expr.eval(vars),
+        }
+    }
+
+    // Calculates the truth table of an expression on n values with t variables
+    pub fn truth_table(&self, n: usize, t: usize) -> Vec<u128> {
+        let size = n.pow(t as u32);
+        let mut tt = vec![0u128; size];
+
+        for i in 0..size {
+            // Decode i into base-N digits (one value per variable)
+            let mut vars = vec![0u128; t];
+            let mut idx = i;
+            for v in (0..t).rev() {
+                vars[v] = (idx % n) as u128;
+                idx /= n;
+            }
+
+            tt[i] = self.eval(&vars) % n as u128;
+        }
+
+        tt
+    }
+
+    // Operator precedence
+    // https://en.cppreference.com/w/c/language/operator_precedence.html
+    fn precedence(&self) -> usize {
+        match self {
+            Expr::Var(_) | Expr::Const(_) => 0,
+
+            Expr::Not(_) | Expr::Neg(_) => 2,
+
+            Expr::Mul(_) => 3,
+
+            Expr::Add(_) | Expr::Sub(_) => 4,
+
+            Expr::Shl(_) | Expr::Shr(_) | Expr::RshiftS(_) => 5,
+
+            Expr::Le(_)
+            | Expr::Lt(_)
+            | Expr::Ge(_)
+            | Expr::Gt(_)
+            | Expr::LeS(_)
+            | Expr::LtS(_)
+            | Expr::GeS(_)
+            | Expr::GtS(_) => 6,
+
+            Expr::Ne(_) | Expr::Eq(_) => 7,
+
+            Expr::And(_) => 8,
+
+            Expr::Xor(_) => 9,
+
+            Expr::Or(_) => 10,
+        }
+    }
+
+    // Parenthesizes an expression if needed
+    fn parenthesize(&self, parent: &Expr, s: String) -> String {
+        if parent.precedence() < self.precedence() {
+            format!("({})", s)
+        } else {
+            s
+        }
+    }
+
+    pub fn latex(&self) -> String {
+        let to_latex = |e: &Expr| e.parenthesize(self, e.latex());
+
+        let join = |exprs: &Vec<Expr>, c: &str| {
+            format!(
+                "{}",
+                exprs.iter().map(to_latex).collect::<Vec<String>>().join(c)
+            )
+        };
+
+        match self {
+            Expr::Var(i) => format!("v_{{{}}}", i),
+            Expr::Const(c) => {
+                if (*c as i128) < 0 {
+                    format!("({})", *c as i128)
+                } else {
+                    format!("{}", c)
+                }
+            }
+            Expr::Not(e) => format!("\\neg {}", to_latex(e)),
+            Expr::Neg(e) => format!("-{}", to_latex(e)),
+
+            Expr::And(exprs) => join(exprs, " \\wedge "),
+            Expr::Or(exprs) => join(exprs, " \\vee "),
+            Expr::Xor(exprs) => join(exprs, " \\oplus "),
+            Expr::Add(exprs) => join(exprs, " + "),
+            Expr::Sub(exprs) => join(exprs, " - "),
+            Expr::Mul(exprs) => join(exprs, " \\cdot "),
+
+            _ => panic!("MISSING LATEX"),
+        }
+    }
 
     // pub fn random<R: Rng>(rng: &mut R, depth: u32, n_vars: usize) -> Self {
     //     if depth == 0 || rng.random_bool(0.2) {
@@ -284,6 +419,55 @@ impl Expr {
     //         .simplify()
     //     }
     // }
+
+    // Is this a bitwise expression
+    pub fn is_bitwise(&self) -> bool {
+        match self {
+            Expr::Var(_) | Expr::Const(_) => true,
+
+            Expr::Not(expr) => expr.is_bitwise(),
+
+            Expr::And(exprs) | Expr::Or(exprs) | Expr::Xor(exprs) => {
+                exprs.iter().all(|e| e.is_bitwise())
+            }
+
+            _ => false,
+        }
+    }
+
+    // Are all variables in the given set
+    pub fn variables_in(&self, allowed_vars: &Vec<usize>) -> bool {
+        match self {
+            Expr::Const(_) => true,
+
+            Expr::Var(i) => allowed_vars.contains(i),
+
+            Expr::Not(expr) | Expr::Neg(expr) => expr.variables_in(allowed_vars),
+
+            Expr::Shl(Binop { left, right })
+            | Expr::Shr(Binop { left, right })
+            | Expr::RshiftS(Binop { left, right })
+            | Expr::Le(Binop { left, right })
+            | Expr::Lt(Binop { left, right })
+            | Expr::Ge(Binop { left, right })
+            | Expr::Gt(Binop { left, right })
+            | Expr::LeS(Binop { left, right })
+            | Expr::LtS(Binop { left, right })
+            | Expr::GeS(Binop { left, right })
+            | Expr::GtS(Binop { left, right })
+            | Expr::Ne(Binop { left, right })
+            | Expr::Eq(Binop { left, right }) => {
+                left.variables_in(allowed_vars) && right.variables_in(allowed_vars)
+            }
+
+            Expr::And(exprs)
+            | Expr::Or(exprs)
+            | Expr::Xor(exprs)
+            | Expr::Add(exprs)
+            | Expr::Sub(exprs)
+            | Expr::Mul(exprs) => exprs.iter().all(|e| e.variables_in(allowed_vars)),
+        }
+    }
 
     pub fn simplify(self) -> Self {
         match self {

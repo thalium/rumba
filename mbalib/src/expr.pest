@@ -1,0 +1,27 @@
+WHITESPACE = _{ " " | "\t" | "\n" }
+
+expr = { or }
+
+or  = { xor ~ ("|" ~ xor)* }
+xor = { and ~ ("^" ~ and)* }
+and = { comp ~ ("&" ~ comp)* }
+
+comp    = { add ~ (comp_op ~ add)* }
+comp_op = { "<=" | "<" | ">=" | ">" | "==" | "!=" }
+
+add    = { mul ~ (add_op ~ mul)* }
+add_op = { "+" | "-" }
+
+mul    = { shift ~ (mul_op ~ shift)* }
+mul_op = { "*" }
+
+shift    = { unary ~ (shift_op ~ unary)* }
+shift_op = { "<<" | ">>" }
+
+unary    = { unary_op ~ unary | atom }
+unary_op = { "!" | "-" }
+
+atom = { number | var | "(" ~ expr ~ ")" }
+
+number = @{ ASCII_DIGIT+ }
+var    = @{ "v" ~ ASCII_DIGIT+ }

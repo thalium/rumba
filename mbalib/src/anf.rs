@@ -1,4 +1,4 @@
-use crate::expr::Expr;
+use crate::expr::{Binop, Expr};
 use std::{
     fmt::{Display, Write},
     ops::{Add, BitAnd, BitOr, BitXor, Index, IndexMut, Mul, Neg, Not, Shl, Shr, Sub},
@@ -445,25 +445,20 @@ impl From<(Expr, usize)> for ANFExpr {
                 terms.fold(first, |a, b| a | b)
             }
 
-            Expr::Shl(terms) => {
-                let left = terms[0].clone();
-                let right = terms[1].clone();
-                let left: Self = (left, n).into();
+            Expr::Shl(Binop { left, right }) => {
+                let left: Self = (*left, n).into();
 
-                if let Expr::Const(c) = right {
+                if let Expr::Const(c) = *right {
                     left << c as u128
                 } else {
                     todo!()
                 }
             }
 
-            Expr::Shr(terms) => {
-                let left = terms[0].clone();
-                let right = terms[1].clone();
+            Expr::Shr(Binop { left, right }) => {
+                let left: Self = (*left, n).into();
 
-                let left: Self = (left, n).into();
-
-                if let Expr::Const(c) = right {
+                if let Expr::Const(c) = *right {
                     left >> c as u128
                 } else {
                     todo!()
