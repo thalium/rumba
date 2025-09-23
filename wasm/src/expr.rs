@@ -3,6 +3,7 @@ use std::panic;
 use mbalib::{
     anf::ANFExpr,
     expr::{Binop, Expr},
+    mcts::{MCTS, Node},
     parser::parse_expr,
 };
 use wasm_bindgen::prelude::*;
@@ -15,6 +16,7 @@ pub fn main() {
 }
 
 #[wasm_bindgen]
+#[derive(Clone)]
 pub struct ExprWasm {
     inner: Expr,
 }
@@ -254,5 +256,54 @@ impl ExprWasm {
         ExprWasm {
             inner: self.inner.clone().simplify(),
         }
+    }
+}
+
+#[wasm_bindgen(getter_with_clone)]
+pub struct MCSTNodeWasm {
+    pub id: usize,
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
+    pub expression: ExprWasm,
+    pub score: f64,
+    pub visits: usize,
+    pub active: bool,
+}
+
+impl From<&Node> for MCSTNodeWasm {
+    fn from(node: &Node) -> Self {
+        MCSTNodeWasm {
+            id: node.id,
+            parent: node.parent,
+            children: node.children.clone(),
+            expression: ExprWasm {
+                inner: node.expression.clone(),
+            },
+            score: node.score,
+            visits: node.visits,
+            active: node.active,
+        }
+    }
+}
+#[wasm_bindgen]
+pub struct MCTSWasm {
+    inner: MCTS,
+}
+
+#[wasm_bindgen]
+impl MCTSWasm {
+    #[wasm_bindgen(constructor)]
+    pub fn new(n: usize, expr: &ExprWasm) -> Self {
+        let inner = MCTS::new(n, expr.inner.clone());
+        Self { inner }
+    }
+
+    pub fn run(&mut self) -> ExprWasm {
+        let result = self.inner.run();
+        ExprWasm { inner: result }
+    }
+
+    pub fn get_nodes(&self) -> Vec<MCSTNodeWasm> {
+        self.inner.nodes.iter().map(MCSTNodeWasm::from).collect()
     }
 }
