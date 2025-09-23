@@ -12,8 +12,7 @@ comp_op = { "<=" | "<" | ">=" | ">" | "==" | "!=" }
 add    = { mul ~ (add_op ~ mul)* }
 add_op = { "+" | "-" }
 
-mul    = { shift ~ (mul_op ~ shift)* }
-mul_op = { "*" }
+mul = { shift ~ ("*" ~ shift)* }
 
 shift    = { unary ~ (shift_op ~ unary)* }
 shift_op = { "<<" | ">>" }

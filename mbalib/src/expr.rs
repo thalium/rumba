@@ -374,7 +374,7 @@ impl Expr {
             Expr::And(exprs) => join(exprs, " \\wedge "),
             Expr::Or(exprs) => join(exprs, " \\vee "),
             Expr::Xor(exprs) => join(exprs, " \\oplus "),
-            Expr::Add(exprs) => join(exprs, " + "),
+            Expr::Add(exprs) => join(exprs, " + ").replace("+ -", "-"),
             Expr::Sub(exprs) => join(exprs, " - "),
             Expr::Mul(exprs) => join(exprs, " \\cdot "),
 

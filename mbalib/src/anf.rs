@@ -20,6 +20,7 @@ impl ANF {
             ANF::One | ANF::Zero | ANF::Var(_, _) => 1,
         }
     }
+
     pub fn eval(&self, vars: &Vec<u128>) -> u128 {
         match self {
             ANF::Xor(anfs) => anfs.iter().map(|a| a.eval(vars)).fold(0, |x, y| x ^ y),
@@ -425,6 +426,11 @@ impl From<(Expr, usize)> for ANFExpr {
             Expr::Not(expr) => {
                 let expr: Self = (*expr, n).into();
                 !expr
+            }
+
+            Expr::Neg(expr) => {
+                let expr: Self = (*expr, n).into();
+                -expr
             }
 
             Expr::And(terms) => {

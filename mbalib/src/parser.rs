@@ -1,7 +1,7 @@
 use pest::Parser;
 use pest_derive::Parser;
 
-use crate::expr::{Binop, Expr};
+use crate::expr::{self, Binop, Expr};
 
 #[derive(Parser)]
 #[grammar = "expr.pest"]
@@ -52,8 +52,34 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
         Rule::or => build_nary!(pair, Or),
         Rule::xor => build_nary!(pair, Xor),
         Rule::and => build_nary!(pair, And),
-        Rule::add => build_nary!(pair, Add),
         Rule::mul => build_nary!(pair, Mul),
+
+        Rule::add => {
+            let mut inner = pair.into_inner();
+
+            // Start with the first term
+            let first = build_expr(inner.next().unwrap());
+
+            let mut exprs = vec![first];
+
+            // Handle remaining (op, mul) pairs
+            while let Some(pair) = inner.next() {
+                let op_str = pair.as_str();
+                let rhs = build_expr(inner.next().unwrap());
+
+                match op_str {
+                    "+" => exprs.push(rhs),
+                    "-" => exprs.push(Expr::Neg(Box::new(rhs))),
+                    _ => unreachable!(),
+                }
+            }
+
+            if exprs.len() == 1 {
+                exprs.into_iter().next().unwrap()
+            } else {
+                Expr::Add(exprs)
+            }
+        }
 
         Rule::shift => {
             // handle comparisons here and wrap into Eq, Lt, etc.

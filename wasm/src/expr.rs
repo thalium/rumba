@@ -1,10 +1,13 @@
 use std::panic;
 
 use mbalib::{
+    anf::ANFExpr,
     expr::{Binop, Expr},
     parser::parse_expr,
 };
 use wasm_bindgen::prelude::*;
+
+use crate::anf::ANFWrapper;
 
 #[wasm_bindgen(start)]
 pub fn main() {
@@ -49,6 +52,12 @@ impl ExprWasm {
     #[wasm_bindgen]
     pub fn toString(&self) -> String {
         self.inner.to_string()
+    }
+
+    #[wasm_bindgen]
+    pub fn anf(&self, n: usize) -> Vec<ANFWrapper> {
+        let a: ANFExpr = (self.inner.clone(), n).into();
+        a.bits.into_iter().map(|a| a.clone().into()).collect()
     }
 
     // Unary
