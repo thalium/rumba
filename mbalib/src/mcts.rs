@@ -40,16 +40,16 @@ impl Default for Node {
     }
 }
 
-struct IO {
-    v0: u128,
-    v1: u128,
-    out: u128,
+pub struct IO {
+    pub v0: u128,
+    pub v1: u128,
+    pub out: u128,
 }
 
 pub struct MCTS {
     n: usize,
     pub nodes: Vec<Node>,
-    ios: Vec<IO>,
+    pub ios: Vec<IO>,
     next_non_terminal: usize,
 
     pub playout_depth: usize,
@@ -64,6 +64,8 @@ fn is_equivalent(e1: &Expr, e2: &Expr) -> bool {
         (Expr::Const(c1), Expr::Const(c2)) => c1 == c2,
 
         (Expr::Not(e1), Expr::Not(e2)) | (Expr::Neg(e1), Expr::Neg(e2)) => is_equivalent(e1, e2),
+
+        (Expr::Scale(v1, e1), Expr::Scale(v2, e2)) => v1 == v2 && is_equivalent(e1, e2),
 
         (Expr::And(e1), Expr::And(e2))
         | (Expr::Or(e1), Expr::Or(e2))
@@ -104,7 +106,7 @@ fn get_non_terminals(e: &Expr) -> Vec<usize> {
 
         Expr::Const(_) => vec![],
 
-        Expr::Not(expr) | Expr::Neg(expr) => get_non_terminals(expr),
+        Expr::Not(expr) | Expr::Neg(expr) | Expr::Scale(_, expr) => get_non_terminals(expr),
 
         Expr::And(exprs)
         | Expr::Or(exprs)
@@ -133,54 +135,10 @@ fn get_non_terminals(e: &Expr) -> Vec<usize> {
     }
 }
 
-fn replace_non_terminal(e: Expr, target: usize, replacement: &Expr) -> Expr {
-    let replace_vec = |exprs: Vec<Expr>| {
-        exprs
-            .into_iter()
-            .map(|e| replace_non_terminal(e, target, replacement))
-            .collect()
-    };
-
-    let replace_binop = |b: Binop| {
-        Binop::new(
-            replace_non_terminal(*b.left, target, replacement),
-            replace_non_terminal(*b.right, target, replacement),
-        )
-    };
-
-    match e {
-        Expr::Var(v) if v == target => replacement.clone(),
-        Expr::Not(inner) => Expr::Not(Box::new(replace_non_terminal(*inner, target, replacement))),
-        Expr::Neg(inner) => Expr::Neg(Box::new(replace_non_terminal(*inner, target, replacement))),
-        Expr::And(exprs) => Expr::And(replace_vec(exprs)),
-        Expr::Or(exprs) => Expr::Or(replace_vec(exprs)),
-        Expr::Xor(exprs) => Expr::Xor(replace_vec(exprs)),
-        Expr::Add(exprs) => Expr::Add(replace_vec(exprs)),
-        Expr::Sub(exprs) => Expr::Sub(replace_vec(exprs)),
-        Expr::Mul(exprs) => Expr::Mul(replace_vec(exprs)),
-
-        Expr::Shl(binop) => Expr::Shl(replace_binop(binop)),
-        Expr::Shr(binop) => Expr::Shr(replace_binop(binop)),
-        Expr::RshiftS(binop) => Expr::RshiftS(replace_binop(binop)),
-        Expr::Le(binop) => Expr::Le(replace_binop(binop)),
-        Expr::Lt(binop) => Expr::Lt(replace_binop(binop)),
-        Expr::Ge(binop) => Expr::Ge(replace_binop(binop)),
-        Expr::Gt(binop) => Expr::Gt(replace_binop(binop)),
-        Expr::LeS(binop) => Expr::LeS(replace_binop(binop)),
-        Expr::LtS(binop) => Expr::LtS(replace_binop(binop)),
-        Expr::GeS(binop) => Expr::GeS(replace_binop(binop)),
-        Expr::GtS(binop) => Expr::GtS(replace_binop(binop)),
-        Expr::Ne(binop) => Expr::Ne(replace_binop(binop)),
-        Expr::Eq(binop) => Expr::Eq(replace_binop(binop)),
-
-        _ => e,
-    }
-}
-
 fn replace_random_non_terminal<R: Rng>(r: &mut R, e: Expr, replacement: &Expr) -> Expr {
     let targets = get_non_terminals(&e);
     let target = *targets.choose(r).unwrap();
-    replace_non_terminal(e, target, replacement)
+    e.replace_var(target, replacement)
 }
 
 impl MCTS {
@@ -189,11 +147,15 @@ impl MCTS {
 
         let mut ios = Vec::<IO>::with_capacity(io_count);
 
-        for io in &mut ios {
-            io.v0 = rand::random_range(0..2u128.pow(n as u32));
-            io.v1 = rand::random_range(0..2u128.pow(n as u32));
+        for _ in 0..io_count {
+            let v0 = rand::random_range(0..2u128.pow(n as u32));
+            let v1 = rand::random_range(0..2u128.pow(n as u32));
 
-            io.out = expr.eval(&[io.v0, io.v1]);
+            ios.push(IO {
+                v0,
+                v1,
+                out: expr.eval(&[v0, v1]),
+            });
         }
 
         Self {
@@ -202,8 +164,8 @@ impl MCTS {
             ios,
             playout_depth: 1,
             next_non_terminal: 3,
-            iterations: 40000,
-            C: 1.42,
+            iterations: 100,
+            C: 0.5,
         }
     }
 
@@ -235,18 +197,21 @@ impl MCTS {
         1.0 - cost.min(1.0)
     }
 
-    fn get_or_create_child(&mut self, parent: usize, expr: Expr) -> usize {
+    fn get_or_create_child(&mut self, parent: usize, expr: Expr) -> (usize, bool) {
         for &child in &self.nodes[parent].children {
             if is_equivalent(&self.nodes[child].expression, &expr) {
-                return child;
+                return (child, false);
             }
         }
 
         let mut child = Node::new(expr, parent);
-        child.id = self.nodes.len() - 1;
+        let id = self.nodes.len();
+        child.id = id;
         self.nodes.push(child);
 
-        self.nodes.len() - 1
+        self.nodes[parent].children.push(id);
+
+        (id, true)
     }
 
     fn get_non_terminal(&mut self) -> Expr {
@@ -295,9 +260,19 @@ impl MCTS {
             }
         };
 
-        let node = self.get_or_create_child(node, replacement);
+        let e = replace_random_non_terminal(rng, self.nodes[node].expression.clone(), &replacement);
 
-        self.random_playout(rng, node, depth.saturating_sub(1))
+        let (node, created) = self.get_or_create_child(node, e);
+
+        self.random_playout(
+            rng,
+            node,
+            if created {
+                depth.saturating_sub(1)
+            } else {
+                depth
+            },
+        )
     }
 
     pub fn run(&mut self) -> Expr {
@@ -307,7 +282,8 @@ impl MCTS {
             let uct = |n: &Node| {
                 n.score
                     + self.C * (self.iterations - i) as f64 / self.iterations as f64
-                        * ((n.parent.map_or(n.visits, |p| self.nodes[p].visits) as f64).log2()
+                        * ((n.parent.map_or(100 * n.visits, |p| self.nodes[p].visits) as f64)
+                            .log2()
                             / n.visits as f64)
                             .sqrt()
             };
@@ -318,7 +294,11 @@ impl MCTS {
                 .iter()
                 .enumerate()
                 .filter(|&(_, n)| n.active)
-                .max_by(|a, b| uct(a.1).partial_cmp(&uct(b.1)).unwrap())
+                .max_by(|a: &(usize, &Node), b| {
+                    uct(a.1)
+                        .partial_cmp(&uct(b.1))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .map(|(i, _)| i)
                 .unwrap();
 
@@ -326,15 +306,11 @@ impl MCTS {
             node = self.random_playout(&mut rng, node, self.playout_depth);
 
             // Leaf node
+            let leaf = node;
             self.nodes[node].active = false;
 
             // Calculates the score
             let score = self.score(node);
-
-            if 1.0 - score < 0.01 {
-                // We found the correct value
-                return self.nodes[node].expression.clone();
-            }
 
             // Propagate the score
             loop {
@@ -348,10 +324,19 @@ impl MCTS {
                     break;
                 }
             }
+
+            if 1.0 - score < 0.001 {
+                // We found the correct value
+                let sol = self
+                    .get_or_create_child(leaf, self.nodes[leaf].expression.clone().arith_reduce())
+                    .0;
+                self.nodes[sol].score = 2.0;
+                return self.nodes[sol].expression.clone();
+            }
         }
 
         // Find the terminal node with the highest score
-        let node = self
+        let leaf = self
             .nodes
             .iter()
             .enumerate()
@@ -360,6 +345,10 @@ impl MCTS {
             .map(|(i, _)| i)
             .unwrap();
 
-        self.nodes[node].expression.clone()
+        let sol = self
+            .get_or_create_child(leaf, self.nodes[leaf].expression.clone().arith_reduce())
+            .0;
+        self.nodes[sol].score = 2.0;
+        return self.nodes[sol].expression.clone();
     }
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt,
     ops::{Add, BitAnd, BitOr, BitXor, Mul, Neg, Not, Shl, Shr, Sub},
     u128, vec,
@@ -6,7 +7,7 @@ use std::{
 
 use crate::expr;
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Binop {
     pub left: Box<Expr>,
     pub right: Box<Expr>,
@@ -21,7 +22,7 @@ impl Binop {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Expr {
     Var(usize),
 
@@ -30,6 +31,7 @@ pub enum Expr {
     // Unary
     Not(Box<Expr>),
     Neg(Box<Expr>),
+    Scale(u128, Box<Expr>),
 
     // Bitwise
     And(Vec<Expr>),
@@ -123,6 +125,14 @@ impl Mul for Expr {
     }
 }
 
+impl Mul<Expr> for u128 {
+    type Output = Expr;
+
+    fn mul(self, rhs: Expr) -> Self::Output {
+        Expr::Scale(self, Box::new(rhs))
+    }
+}
+
 impl Not for Expr {
     type Output = Expr;
 
@@ -153,6 +163,10 @@ impl fmt::Display for Expr {
             )
         };
 
+        let draw_binop = |f: &mut fmt::Formatter<'_>, b: &Binop, c: &str| {
+            write!(f, "{} {} {}", b.left.to_string(), c, b.right.to_string())
+        };
+
         match self {
             Expr::Var(i) => write!(f, "v{}", i),
             Expr::Const(c) => {
@@ -164,6 +178,7 @@ impl fmt::Display for Expr {
             }
             Expr::Not(expr) => write!(f, "!{}", to_string(expr)),
             Expr::Neg(expr) => write!(f, "-{}", to_string(expr)),
+            Expr::Scale(a, expr) => write!(f, "{} * {}", a, to_string(expr)),
 
             Expr::And(exprs) => join(exprs, " & "),
             Expr::Or(exprs) => join(exprs, " | "),
@@ -172,19 +187,19 @@ impl fmt::Display for Expr {
             Expr::Sub(exprs) => join(exprs, " - "),
             Expr::Mul(exprs) => join(exprs, " * "),
 
-            _ => todo!(), // Expr::Shl(exprs) => join(exprs, " << "),
-                          // Expr::Shr(exprs) => join(exprs, " >> "),
-                          // Expr::RshiftS(exprs) => join(exprs, " >>s "),
-                          // Expr::Le(exprs) => join(exprs, " <= "),
-                          // Expr::Lt(exprs) => join(exprs, " < "),
-                          // Expr::Ge(exprs) => join(exprs, " >= "),
-                          // Expr::Gt(exprs) => join(exprs, " > "),
-                          // Expr::LeS(exprs) => join(exprs, " <=s "),
-                          // Expr::LtS(exprs) => join(exprs, " <s "),
-                          // Expr::GeS(exprs) => join(exprs, " >=s "),
-                          // Expr::GtS(exprs) => join(exprs, " >s "),
-                          // Expr::Ne(exprs) => join(exprs, " != "),
-                          // Expr::Eq(exprs) => join(exprs, " == "),
+            Expr::Shl(binop) => draw_binop(f, binop, " << "),
+            Expr::Shr(binop) => draw_binop(f, binop, " >> "),
+            Expr::RshiftS(binop) => draw_binop(f, binop, " >>s "),
+            Expr::Le(binop) => draw_binop(f, binop, " <= "),
+            Expr::Lt(binop) => draw_binop(f, binop, " < "),
+            Expr::Ge(binop) => draw_binop(f, binop, " >= "),
+            Expr::Gt(binop) => draw_binop(f, binop, " > "),
+            Expr::LeS(binop) => draw_binop(f, binop, " <=s "),
+            Expr::LtS(binop) => draw_binop(f, binop, " <s "),
+            Expr::GeS(binop) => draw_binop(f, binop, " >=s "),
+            Expr::GtS(binop) => draw_binop(f, binop, " >s "),
+            Expr::Ne(binop) => draw_binop(f, binop, " != "),
+            Expr::Eq(binop) => draw_binop(f, binop, " == "),
         }
     }
 }
@@ -202,7 +217,7 @@ impl Expr {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
 
-            Expr::Not(expr) | Expr::Neg(expr) => expr.size(),
+            Expr::Not(expr) | Expr::Neg(expr) | Expr::Scale(_, expr) => expr.size(),
 
             Expr::Shl(Binop { left, right })
             | Expr::Shr(Binop { left, right })
@@ -260,6 +275,8 @@ impl Expr {
                 .map(|e| e.eval(vars))
                 .fold(1, |x, y| x.wrapping_mul(y)),
 
+            Expr::Scale(v, e) => *v * e.eval(vars),
+
             Expr::Not(e) => !e.eval(vars),
 
             Expr::Shl(b) => b.left.eval(vars).wrapping_shl(b.right.eval(vars) as u32),
@@ -283,7 +300,7 @@ impl Expr {
             Expr::GeS(b) => ((b.left.eval(vars) as i128) >= (b.right.eval(vars) as i128)) as u128,
             Expr::GtS(b) => ((b.left.eval(vars) as i128) > (b.right.eval(vars) as i128)) as u128,
 
-            Expr::Neg(expr) => !expr.eval(vars),
+            Expr::Neg(expr) => -(expr.eval(vars) as i128) as u128,
         }
     }
 
@@ -315,7 +332,7 @@ impl Expr {
 
             Expr::Not(_) | Expr::Neg(_) => 2,
 
-            Expr::Mul(_) => 3,
+            Expr::Mul(_) | Expr::Scale(_, _) => 3,
 
             Expr::Add(_) | Expr::Sub(_) => 4,
 
@@ -377,6 +394,13 @@ impl Expr {
             Expr::Add(exprs) => join(exprs, " + ").replace("+ -", "-"),
             Expr::Sub(exprs) => join(exprs, " - "),
             Expr::Mul(exprs) => join(exprs, " \\cdot "),
+
+            Expr::Shl(Binop { left, right }) => {
+                format!("{} \\gg {}", to_latex(left), to_latex(right))
+            }
+            Expr::Shr(Binop { left, right }) => {
+                format!("{} \\ll {}", to_latex(left), to_latex(right))
+            }
 
             _ => panic!("MISSING LATEX"),
         }
@@ -442,7 +466,9 @@ impl Expr {
 
             Expr::Var(i) => allowed_vars.contains(i),
 
-            Expr::Not(expr) | Expr::Neg(expr) => expr.variables_in(allowed_vars),
+            Expr::Not(expr) | Expr::Neg(expr) | Expr::Scale(_, expr) => {
+                expr.variables_in(allowed_vars)
+            }
 
             Expr::Shl(Binop { left, right })
             | Expr::Shr(Binop { left, right })
@@ -469,49 +495,157 @@ impl Expr {
         }
     }
 
-    pub fn simplify(self) -> Self {
+    pub fn replace_var(self, target_var: usize, replacement: &Expr) -> Self {
+        let replace_vec = |exprs: Vec<Expr>| {
+            exprs
+                .into_iter()
+                .map(|e| e.replace_var(target_var, replacement))
+                .collect()
+        };
+
+        let replace_binop = |b: Binop| {
+            Binop::new(
+                b.left.replace_var(target_var, replacement),
+                b.right.replace_var(target_var, replacement),
+            )
+        };
+
+        match self {
+            Expr::Var(v) if v == target_var => replacement.clone(),
+            Expr::Not(inner) => !inner.replace_var(target_var, replacement),
+            Expr::Neg(inner) => -inner.replace_var(target_var, replacement),
+            Expr::And(exprs) => Expr::And(replace_vec(exprs)),
+            Expr::Or(exprs) => Expr::Or(replace_vec(exprs)),
+            Expr::Xor(exprs) => Expr::Xor(replace_vec(exprs)),
+            Expr::Add(exprs) => Expr::Add(replace_vec(exprs)),
+            Expr::Sub(exprs) => Expr::Sub(replace_vec(exprs)),
+            Expr::Mul(exprs) => Expr::Mul(replace_vec(exprs)),
+
+            Expr::Shl(binop) => Expr::Shl(replace_binop(binop)),
+            Expr::Shr(binop) => Expr::Shr(replace_binop(binop)),
+            Expr::RshiftS(binop) => Expr::RshiftS(replace_binop(binop)),
+            Expr::Le(binop) => Expr::Le(replace_binop(binop)),
+            Expr::Lt(binop) => Expr::Lt(replace_binop(binop)),
+            Expr::Ge(binop) => Expr::Ge(replace_binop(binop)),
+            Expr::Gt(binop) => Expr::Gt(replace_binop(binop)),
+            Expr::LeS(binop) => Expr::LeS(replace_binop(binop)),
+            Expr::LtS(binop) => Expr::LtS(replace_binop(binop)),
+            Expr::GeS(binop) => Expr::GeS(replace_binop(binop)),
+            Expr::GtS(binop) => Expr::GtS(replace_binop(binop)),
+            Expr::Ne(binop) => Expr::Ne(replace_binop(binop)),
+            Expr::Eq(binop) => Expr::Eq(replace_binop(binop)),
+
+            _ => self,
+        }
+    }
+
+    pub fn factor(self) -> Self {
+        match self {
+            Expr::Add(exprs) => {
+                let mut map = HashMap::<Expr, usize>::new();
+
+                let mut add_expr = |e, c| {
+                    if let Some(count) = map.get_mut(&e) {
+                        *count = count.wrapping_add(c);
+                    } else {
+                        map.insert(e, c);
+                    }
+                };
+
+                for e in exprs.into_iter() {
+                    if let Expr::Mul(mul) = &e {
+                        match mul.as_slice() {
+                            [Expr::Const(c), e] => {
+                                add_expr(e.clone(), *c as usize);
+                                continue;
+                            }
+                            [e, Expr::Const(c)] => {
+                                add_expr(e.clone(), *c as usize);
+                                continue;
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    add_expr(e, 1);
+                }
+
+                let mut out = Vec::with_capacity(map.len());
+
+                for (e, count) in map {
+                    if count == 0 {
+                        continue;
+                    }
+
+                    if count == 1 {
+                        out.push(e);
+                    } else {
+                        out.push(Expr::Mul(vec![Expr::Const(count as u128), e]).arith_reduce());
+                    }
+                }
+
+                Expr::Add(out)
+            }
+            _ => self,
+        }
+    }
+
+    pub fn arith_reduce(self) -> Self {
         match self {
             Expr::Not(expr) => match *expr {
-                Expr::Not(x) => x.simplify(),
+                Expr::Not(x) => x.arith_reduce(),
 
                 Expr::Const(v) => Expr::Const(!v),
 
                 Expr::And(exprs) => Expr::Or(
                     exprs
                         .into_iter()
-                        .map(|e| Expr::Not(Box::new(e)).simplify())
+                        .map(|e| Expr::Not(Box::new(e)).arith_reduce())
                         .collect(),
                 ),
 
                 Expr::Or(exprs) => Expr::And(
                     exprs
                         .into_iter()
-                        .map(|e| Expr::Not(Box::new(e)).simplify())
+                        .map(|e| Expr::Not(Box::new(e)).arith_reduce())
                         .collect(),
                 ),
 
-                _ => Expr::Not(Box::new(expr.simplify())),
+                _ => Expr::Not(Box::new(expr.arith_reduce())),
             },
 
             Expr::Neg(expr) => match *expr {
-                Expr::Neg(x) => x.simplify(),
+                Expr::Neg(x) => x.arith_reduce(),
                 Expr::Const(v) => Expr::Const(-(v as i128) as u128),
-                _ => Expr::Mul(vec![Expr::Const(-1i128 as u128), expr.simplify()]),
+                _ => Expr::Mul(vec![Expr::Const(-1i128 as u128), expr.arith_reduce()]),
             },
 
             Expr::And(exprs) => {
-                // The constant term
-                let mut c = u128::MAX;
+                fn collect(e: Expr, c: &mut u128, out: &mut Vec<Expr>) {
+                    match e.arith_reduce() {
+                        Expr::And(inner) => {
+                            for e in inner {
+                                collect(e, c, out);
+                            }
+                        }
 
-                // First, flatten nested ANDs and filter trivial elements
-                let mut flat = Vec::with_capacity(exprs.capacity());
-                for e in exprs.into_iter().map(|e| e.simplify()) {
-                    match e {
-                        Expr::And(inner) => flat.extend(inner),
-                        Expr::Const(0) => return Expr::Const(0),
-                        Expr::Const(v) => c &= v,
-                        other => flat.push(other),
+                        Expr::Const(v) => {
+                            *c &= v;
+                        }
+
+                        other => out.push(other),
                     }
+                }
+
+                let mut c = u128::MAX;
+                let mut flat = Vec::with_capacity(exprs.len());
+
+                for e in exprs.into_iter() {
+                    collect(e, &mut c, &mut flat);
+                }
+
+                if c == 0 {
+                    return Expr::Const(0);
                 }
 
                 if c != u128::MAX {
@@ -525,9 +659,9 @@ impl Expr {
                         for term in xor_terms {
                             let mut copy = flat.clone();
                             copy.insert(pos, term);
-                            distributed_terms.push(Expr::And(copy).simplify()); // recursive call, simplified incrementally
+                            distributed_terms.push(Expr::And(copy).arith_reduce()); // recursive call, simplified incrementally
                         }
-                        return Expr::Xor(distributed_terms).simplify();
+                        return Expr::Xor(distributed_terms).arith_reduce();
                     }
                 }
 
@@ -543,17 +677,27 @@ impl Expr {
             }
 
             Expr::Or(exprs) => {
-                // The constant term
-                let mut c = 0u128;
+                fn collect(e: Expr, c: &mut u128, out: &mut Vec<Expr>) {
+                    match e.arith_reduce() {
+                        Expr::Or(inner) => {
+                            for e in inner {
+                                collect(e, c, out);
+                            }
+                        }
 
-                // First, flatten nested ORs and filter trivial elements
-                let mut flat = Vec::with_capacity(exprs.capacity());
-                for e in exprs.into_iter().map(|e| e.simplify()) {
-                    match e {
-                        Expr::Or(inner) => flat.extend(inner),
-                        Expr::Const(v) => c |= v,
-                        other => flat.push(other),
+                        Expr::Const(v) => {
+                            *c |= v;
+                        }
+
+                        other => out.push(other),
                     }
+                }
+
+                let mut c = 0;
+                let mut flat = Vec::with_capacity(exprs.len());
+
+                for e in exprs.into_iter() {
+                    collect(e, &mut c, &mut flat);
                 }
 
                 if c != 0u128 {
@@ -567,9 +711,9 @@ impl Expr {
                         for term in and_terms {
                             let mut copy = flat.clone();
                             copy.insert(pos, term);
-                            distributed_terms.push(Expr::Or(copy).simplify()); // recursive call, simplified incrementally
+                            distributed_terms.push(Expr::Or(copy).arith_reduce()); // recursive call, simplified incrementally
                         }
-                        return Expr::And(distributed_terms).simplify();
+                        return Expr::And(distributed_terms).arith_reduce();
                     }
                 }
 
@@ -585,16 +729,28 @@ impl Expr {
             }
 
             Expr::Xor(exprs) => {
-                // The constant term
-                let mut c = 0u128;
+                // Flatten
+                fn collect(e: Expr, c: &mut u128, out: &mut Vec<Expr>) {
+                    match e.arith_reduce() {
+                        Expr::Xor(inner) => {
+                            for e in inner {
+                                collect(e, c, out);
+                            }
+                        }
 
-                let mut flat = Vec::with_capacity(exprs.len());
-                for e in exprs.into_iter().map(|e| e.simplify()) {
-                    match e {
-                        Expr::Xor(inner) => flat.extend(inner),
-                        Expr::Const(v) => c ^= v,
-                        other => flat.push(other),
+                        Expr::Const(v) => {
+                            *c ^= v;
+                        }
+
+                        other => out.push(other),
                     }
+                }
+
+                let mut c = 0;
+                let mut flat = Vec::with_capacity(exprs.len());
+
+                for e in exprs.into_iter() {
+                    collect(e, &mut c, &mut flat);
                 }
 
                 if c != 0 {
@@ -624,16 +780,28 @@ impl Expr {
             }
 
             Expr::Add(exprs) => {
-                // The constant term
-                let mut c = 0u128;
+                // Flatten
+                fn collect(e: Expr, c: &mut u128, out: &mut Vec<Expr>) {
+                    match e.arith_reduce() {
+                        Expr::Add(inner) => {
+                            for e in inner {
+                                collect(e, c, out);
+                            }
+                        }
 
-                let mut flat = Vec::with_capacity(exprs.len());
-                for e in exprs.into_iter().map(|e| e.simplify()) {
-                    match e {
-                        Expr::Add(inner) => flat.extend(inner),
-                        Expr::Const(v) => c = c.wrapping_add(v),
-                        other => flat.push(other),
+                        Expr::Const(v) => {
+                            *c = c.wrapping_add(v);
+                        }
+
+                        other => out.push(other),
                     }
+                }
+
+                let mut c: u128 = 0;
+                let mut flat = Vec::with_capacity(exprs.len());
+
+                for e in exprs.into_iter() {
+                    collect(e, &mut c, &mut flat);
                 }
 
                 if c != 0 {
@@ -643,34 +811,50 @@ impl Expr {
                 match flat.len() {
                     0 => Expr::Const(0),
                     1 => flat.into_iter().next().unwrap(),
-                    _ => Expr::Add(flat),
+                    _ => Expr::Add(flat).factor(),
                 }
             }
 
             Expr::Sub(exprs) => match exprs.len() {
                 0 => Expr::Const(0),
-                1 => exprs.into_iter().next().unwrap().simplify(),
+                1 => exprs.into_iter().next().unwrap().arith_reduce(),
                 _ => {
                     let mut terms = Vec::with_capacity(exprs.len());
                     terms.push(exprs[0].clone());
                     for i in 1..exprs.len() {
-                        terms.push(Expr::Neg(Box::new(exprs[i].clone())));
+                        terms.push(-exprs[i].clone());
                     }
-                    Expr::Add(terms)
+                    Expr::Add(terms).arith_reduce()
                 }
             },
 
             Expr::Mul(exprs) => {
-                // The constant term
-                let mut c: u128 = 1;
+                // Flatten
+                fn collect(e: Expr, c: &mut u128, out: &mut Vec<Expr>) {
+                    match e.arith_reduce() {
+                        Expr::Mul(inner) => {
+                            for e in inner {
+                                collect(e, c, out);
+                            }
+                        }
 
-                let mut flat = Vec::with_capacity(exprs.len());
-                for e in exprs.into_iter().map(|e| e.simplify()) {
-                    match e {
-                        Expr::Mul(inner) => flat.extend(inner),
-                        Expr::Const(v) => c = c.wrapping_mul(v),
-                        other => flat.push(other),
+                        Expr::Const(v) => {
+                            *c = c.wrapping_mul(v);
+                        }
+
+                        other => out.push(other),
                     }
+                }
+
+                let mut c: u128 = 1;
+                let mut flat = Vec::with_capacity(exprs.len());
+
+                for e in exprs.into_iter() {
+                    collect(e, &mut c, &mut flat);
+                }
+
+                if c == 0 {
+                    return Expr::Const(0);
                 }
 
                 if c != 1 {
@@ -684,9 +868,9 @@ impl Expr {
                         for term in terms {
                             let mut copy = flat.clone();
                             copy.insert(pos, term);
-                            distributed_terms.push(Expr::Mul(copy).simplify()); // recursive call, simplified incrementally
+                            distributed_terms.push(Expr::Mul(copy).arith_reduce()); // recursive call, simplified incrementally
                         }
-                        return Expr::Add(distributed_terms).simplify();
+                        return Expr::Add(distributed_terms).arith_reduce();
                     }
                 }
 
@@ -697,7 +881,86 @@ impl Expr {
                 }
             }
 
+            Expr::Shl(b) => match (*b.left, *b.right) {
+                (Expr::Const(c1), Expr::Const(c2)) => Expr::Const(c1 << c2),
+                (l, Expr::Const(1)) => (Expr::Const(2) * l).arith_reduce(),
+                (l, r) => Expr::Shl(Binop::new(l.arith_reduce(), r.arith_reduce())),
+            },
+
+            Expr::Shr(b) => match (*b.left, *b.right) {
+                (Expr::Const(c1), Expr::Const(c2)) => Expr::Const(c1 >> c2),
+                (l, r) => Expr::Shr(Binop::new(l.arith_reduce(), r.arith_reduce())),
+            },
+
             _ => self,
         }
+    }
+
+    /// Is the outer most expression a boolean expression
+    pub fn is_bool(&self) -> bool {
+        match self {
+            Expr::Not(_)
+            | Expr::And(_)
+            | Expr::Or(_)
+            | Expr::Xor(_)
+            | Expr::Shl(_)
+            | Expr::Shr(_) => true,
+
+            _ => false,
+        }
+    }
+
+    /// Is the outer most expression an arithmetic expression
+    pub fn is_arithmetic(&self) -> bool {
+        match self {
+            Expr::Neg(_) | Expr::Add(_) | Expr::Sub(_) | Expr::Mul(_) | Expr::Scale(_, _) => true,
+            _ => false,
+        }
+    }
+
+    // Helper recusive function that needs a reference
+    pub fn map<F>(self, mut f: F) -> Self
+    where
+        F: FnMut(Self) -> Self,
+    {
+        let vec_map = |exprs: Vec<Expr>, f: F| exprs.into_iter().map(f).collect();
+        let binop_map = |b: Binop, mut f: F| Binop::new(f(*b.left), f(*b.right));
+
+        match self {
+            Expr::Var(_) | Expr::Const(_) => self,
+
+            Expr::Not(expr) => !f(*expr),
+            Expr::Neg(expr) => -f(*expr),
+            Expr::Scale(v, expr) => v * f(*expr),
+
+            Expr::And(exprs) => Expr::And(vec_map(exprs, f)),
+            Expr::Or(exprs) => Expr::Or(vec_map(exprs, f)),
+            Expr::Xor(exprs) => Expr::Xor(vec_map(exprs, f)),
+            Expr::Add(exprs) => Expr::Add(vec_map(exprs, f)),
+            Expr::Sub(exprs) => Expr::Sub(vec_map(exprs, f)),
+            Expr::Mul(exprs) => Expr::Mul(vec_map(exprs, f)),
+
+            Expr::Shl(binop) => Expr::Shl(binop_map(binop, f)),
+            Expr::Shr(binop) => Expr::Shr(binop_map(binop, f)),
+            Expr::RshiftS(binop) => Expr::RshiftS(binop_map(binop, f)),
+            Expr::Le(binop) => Expr::Le(binop_map(binop, f)),
+            Expr::Lt(binop) => Expr::Lt(binop_map(binop, f)),
+            Expr::Ge(binop) => Expr::Ge(binop_map(binop, f)),
+            Expr::Gt(binop) => Expr::Gt(binop_map(binop, f)),
+            Expr::LeS(binop) => Expr::LeS(binop_map(binop, f)),
+            Expr::LtS(binop) => Expr::LtS(binop_map(binop, f)),
+            Expr::GeS(binop) => Expr::GeS(binop_map(binop, f)),
+            Expr::GtS(binop) => Expr::GtS(binop_map(binop, f)),
+            Expr::Ne(binop) => Expr::Ne(binop_map(binop, f)),
+            Expr::Eq(binop) => Expr::Eq(binop_map(binop, f)),
+        }
+    }
+
+    pub fn mod_simplify(self, n: u32) -> Self {
+        self.map(|e| match e {
+            Expr::Const(c) => Expr::Const(c % 2u128.pow(n)),
+            Expr::Scale(v, e) => (v % 2u128.pow(n)) * *e,
+            _ => e.mod_simplify(n),
+        })
     }
 }

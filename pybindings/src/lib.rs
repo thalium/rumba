@@ -46,7 +46,7 @@ impl PyExpr {
     }
 
     fn simplify(&mut self) {
-        self.inner = self.inner.clone().simplify();
+        self.inner = self.inner.clone().arith_reduce();
     }
 
     fn anf(&mut self, n: usize) -> PyANFExpr {

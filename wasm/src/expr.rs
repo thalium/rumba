@@ -2,9 +2,11 @@ use std::panic;
 
 use mbalib::{
     anf::ANFExpr,
+    blast::blast,
     expr::{Binop, Expr},
-    mcts::{MCTS, Node},
+    mcts::{IO, MCTS, Node},
     parser::parse_expr,
+    symba::{self, solve_linear},
 };
 use wasm_bindgen::prelude::*;
 
@@ -12,6 +14,7 @@ use crate::anf::ANFWrapper;
 
 #[wasm_bindgen(start)]
 pub fn main() {
+    console_log::init().unwrap();
     panic::set_hook(Box::new(console_error_panic_hook::hook));
 }
 
@@ -54,6 +57,34 @@ impl ExprWasm {
     #[wasm_bindgen]
     pub fn toString(&self) -> String {
         self.inner.to_string()
+    }
+
+    #[wasm_bindgen]
+    pub fn blast(&self) -> Self {
+        Self {
+            inner: blast(self.inner.clone()),
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn solve(&self) -> Self {
+        Self {
+            inner: symba::solve_linear(&self.inner),
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn solvep(&self) -> Self {
+        Self {
+            inner: symba::solve(self.inner.clone()),
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn mod_simplify(&self, n: u32) -> Self {
+        Self {
+            inner: self.inner.clone().mod_simplify(n).arith_reduce(),
+        }
     }
 
     #[wasm_bindgen]
@@ -254,7 +285,7 @@ impl ExprWasm {
     #[wasm_bindgen]
     pub fn simplify(&self) -> ExprWasm {
         ExprWasm {
-            inner: self.inner.clone().simplify(),
+            inner: self.inner.clone().arith_reduce(),
         }
     }
 }
@@ -285,6 +316,23 @@ impl From<&Node> for MCSTNodeWasm {
         }
     }
 }
+
+#[wasm_bindgen]
+pub struct IOWasm {
+    pub v0: u128,
+    pub v1: u128,
+    pub out: u128,
+}
+
+impl From<&IO> for IOWasm {
+    fn from(io: &IO) -> Self {
+        Self {
+            v0: io.v0,
+            v1: io.v1,
+            out: io.out,
+        }
+    }
+}
 #[wasm_bindgen]
 pub struct MCTSWasm {
     inner: MCTS,
@@ -305,5 +353,9 @@ impl MCTSWasm {
 
     pub fn get_nodes(&self) -> Vec<MCSTNodeWasm> {
         self.inner.nodes.iter().map(MCSTNodeWasm::from).collect()
+    }
+
+    pub fn get_io(&self) -> Vec<IOWasm> {
+        self.inner.ios.iter().map(IOWasm::from).collect()
     }
 }
