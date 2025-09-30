@@ -1,11 +1,13 @@
 use std::panic;
 
+use log::error;
 use mbalib::{
     anf::ANFExpr,
     blast::blast,
     expr::{Binop, Expr},
     mcts::{IO, MCTS, Node},
     parser::parse_expr,
+    poly::solve_polynomial,
     symba::{self, solve_linear},
 };
 use wasm_bindgen::prelude::*;
@@ -76,7 +78,7 @@ impl ExprWasm {
     #[wasm_bindgen]
     pub fn solvep(&self) -> Self {
         Self {
-            inner: symba::solve(self.inner.clone()),
+            inner: solve_polynomial(self.inner.clone()),
         }
     }
 
@@ -251,9 +253,9 @@ impl ExprWasm {
     }
 
     #[wasm_bindgen]
-    pub fn eval(&self, vars: Box<[f64]>) -> f64 {
+    pub fn eval(&self, vars: Box<[f64]>, bits: f64) -> f64 {
         let vars: Vec<u128> = vars.iter().map(|v| *v as u128).collect();
-        self.inner.eval(&vars) as f64
+        (self.inner.eval(&vars) % 2u128.pow(bits as u32)) as f64
     }
 
     #[wasm_bindgen]
@@ -267,8 +269,8 @@ impl ExprWasm {
     }
 
     #[wasm_bindgen]
-    pub fn latex(&self) -> String {
-        self.inner.latex()
+    pub fn latex(&self, n: u32, hex: bool) -> String {
+        self.inner.latex(n, hex)
     }
 
     #[wasm_bindgen]

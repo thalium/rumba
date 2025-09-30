@@ -1,11 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     ops::{Add, BitAnd, BitOr, BitXor, Mul, Neg, Not, Shl, Shr, Sub},
     u128, vec,
 };
-
-use crate::expr;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Binop {
@@ -129,7 +127,13 @@ impl Mul<Expr> for u128 {
     type Output = Expr;
 
     fn mul(self, rhs: Expr) -> Self::Output {
-        Expr::Scale(self, Box::new(rhs))
+        if self == 0 {
+            Expr::Const(0)
+        } else if self == 1 {
+            rhs
+        } else {
+            Expr::Scale(self, Box::new(rhs))
+        }
     }
 }
 
@@ -213,6 +217,7 @@ impl<T: Into<u128>> From<T> for Expr {
 }
 
 impl Expr {
+    /// Counts the number of nodes in the expression
     pub fn size(&self) -> usize {
         match self {
             Expr::Var(_) | Expr::Const(_) => 1,
@@ -242,6 +247,7 @@ impl Expr {
         }
     }
 
+    /// Evaluates the expression with the given variable values
     pub fn eval(&self, vars: &[u128]) -> u128 {
         match self {
             Expr::Var(i) => vars[*i],
@@ -304,7 +310,7 @@ impl Expr {
         }
     }
 
-    // Calculates the truth table of an expression on n values with t variables
+    /// Calculates the truth table of an expression on n values with t variables
     pub fn truth_table(&self, n: usize, t: usize) -> Vec<u128> {
         let size = n.pow(t as u32);
         let mut tt = vec![0u128; size];
@@ -313,15 +319,68 @@ impl Expr {
             // Decode i into base-N digits (one value per variable)
             let mut vars = vec![0u128; t];
             let mut idx = i;
-            for v in (0..t).rev() {
+            for v in 0..t {
                 vars[v] = (idx % n) as u128;
                 idx /= n;
             }
 
-            tt[i] = self.eval(&vars) % n as u128;
+            tt[i] = self.eval(&vars) as u128;
         }
 
         tt
+    }
+
+    /// Calls a function recursively on each node of an expression
+    pub fn visit<T, F>(&self, mut f: F) -> T
+    where
+        F: FnMut(&Expr, Vec<T>) -> T + Clone,
+    {
+        match self {
+            Expr::Var(_) | Expr::Const(_) => f(self, vec![]),
+
+            Expr::Not(expr) | Expr::Neg(expr) | Expr::Scale(_, expr) => {
+                let v = vec![expr.visit::<T, F>(f.clone())];
+                f(self, v)
+            }
+
+            Expr::And(exprs)
+            | Expr::Or(exprs)
+            | Expr::Xor(exprs)
+            | Expr::Add(exprs)
+            | Expr::Sub(exprs)
+            | Expr::Mul(exprs) => {
+                let v = exprs.iter().map(|e| e.visit(f.clone())).collect();
+                f(self, v)
+            }
+
+            Expr::Shl(binop)
+            | Expr::Shr(binop)
+            | Expr::RshiftS(binop)
+            | Expr::Le(binop)
+            | Expr::Lt(binop)
+            | Expr::Ge(binop)
+            | Expr::Gt(binop)
+            | Expr::LeS(binop)
+            | Expr::LtS(binop)
+            | Expr::GeS(binop)
+            | Expr::GtS(binop)
+            | Expr::Ne(binop)
+            | Expr::Eq(binop) => {
+                let v = vec![binop.left.visit(f.clone()), binop.right.visit(f.clone())];
+                f(self, v)
+            }
+        }
+    }
+
+    /// Counts the number of variables in the expression
+    pub fn get_vars(&self) -> HashSet<usize> {
+        self.visit(|e, children: Vec<HashSet<usize>>| {
+            let mut acc: HashSet<usize> = children.into_iter().flatten().collect();
+            if let Expr::Var(v) = e {
+                acc.insert(*v);
+            }
+            acc
+        })
     }
 
     // Operator precedence
@@ -366,8 +425,9 @@ impl Expr {
         }
     }
 
-    pub fn latex(&self) -> String {
-        let to_latex = |e: &Expr| e.parenthesize(self, e.latex());
+    // A latex representation of the expression
+    pub fn latex(&self, n: u32, hex: bool) -> String {
+        let to_latex = |e: &Expr| e.parenthesize(self, e.latex(n, hex));
 
         let join = |exprs: &Vec<Expr>, c: &str| {
             format!(
@@ -376,17 +436,39 @@ impl Expr {
             )
         };
 
-        match self {
-            Expr::Var(i) => format!("v_{{{}}}", i),
-            Expr::Const(c) => {
-                if (*c as i128) < 0 {
-                    format!("({})", *c as i128)
+        let display_const = |c: u128| {
+            // mask to keep only n bits
+            let mask = if n == 128 {
+                u128::MAX
+            } else {
+                (1u128 << n) - 1
+            };
+
+            let val = c & mask;
+            let sign_bit = 1u128 << (n - 1);
+
+            if val & sign_bit != 0 {
+                let signed = (val as i128) - (1i128 << n);
+                if hex {
+                    format!("(-\\mathrm{{{:#x}}})", -signed)
                 } else {
-                    format!("{}", c)
+                    format!("(-{})", -signed)
+                }
+            } else {
+                if hex {
+                    format!("\\mathrm{{{:#x}}}", val)
+                } else {
+                    format!("{}", val)
                 }
             }
+        };
+
+        match self {
+            Expr::Var(i) => format!("v_{{{}}}", i),
+            Expr::Const(c) => display_const(*c),
             Expr::Not(e) => format!("\\neg {}", to_latex(e)),
             Expr::Neg(e) => format!("-{}", to_latex(e)),
+            Expr::Scale(c, e) => format!("{} \\cdot {}", display_const(*c), to_latex(e)),
 
             Expr::And(exprs) => join(exprs, " \\wedge "),
             Expr::Or(exprs) => join(exprs, " \\vee "),
@@ -444,10 +526,18 @@ impl Expr {
     //     }
     // }
 
+    // Is this a constant
+    pub fn is_constant(&self) -> bool {
+        match self {
+            Expr::Const(_) => true,
+            _ => false,
+        }
+    }
+
     // Is this a bitwise expression
     pub fn is_bitwise(&self) -> bool {
         match self {
-            Expr::Var(_) | Expr::Const(_) => true,
+            Expr::Var(_) => true,
 
             Expr::Not(expr) => expr.is_bitwise(),
 
@@ -495,51 +585,15 @@ impl Expr {
         }
     }
 
+    // Replaces a given var with another expression
     pub fn replace_var(self, target_var: usize, replacement: &Expr) -> Self {
-        let replace_vec = |exprs: Vec<Expr>| {
-            exprs
-                .into_iter()
-                .map(|e| e.replace_var(target_var, replacement))
-                .collect()
-        };
-
-        let replace_binop = |b: Binop| {
-            Binop::new(
-                b.left.replace_var(target_var, replacement),
-                b.right.replace_var(target_var, replacement),
-            )
-        };
-
-        match self {
+        self.map(|e| match e {
             Expr::Var(v) if v == target_var => replacement.clone(),
-            Expr::Not(inner) => !inner.replace_var(target_var, replacement),
-            Expr::Neg(inner) => -inner.replace_var(target_var, replacement),
-            Expr::And(exprs) => Expr::And(replace_vec(exprs)),
-            Expr::Or(exprs) => Expr::Or(replace_vec(exprs)),
-            Expr::Xor(exprs) => Expr::Xor(replace_vec(exprs)),
-            Expr::Add(exprs) => Expr::Add(replace_vec(exprs)),
-            Expr::Sub(exprs) => Expr::Sub(replace_vec(exprs)),
-            Expr::Mul(exprs) => Expr::Mul(replace_vec(exprs)),
-
-            Expr::Shl(binop) => Expr::Shl(replace_binop(binop)),
-            Expr::Shr(binop) => Expr::Shr(replace_binop(binop)),
-            Expr::RshiftS(binop) => Expr::RshiftS(replace_binop(binop)),
-            Expr::Le(binop) => Expr::Le(replace_binop(binop)),
-            Expr::Lt(binop) => Expr::Lt(replace_binop(binop)),
-            Expr::Ge(binop) => Expr::Ge(replace_binop(binop)),
-            Expr::Gt(binop) => Expr::Gt(replace_binop(binop)),
-            Expr::LeS(binop) => Expr::LeS(replace_binop(binop)),
-            Expr::LtS(binop) => Expr::LtS(replace_binop(binop)),
-            Expr::GeS(binop) => Expr::GeS(replace_binop(binop)),
-            Expr::GtS(binop) => Expr::GtS(replace_binop(binop)),
-            Expr::Ne(binop) => Expr::Ne(replace_binop(binop)),
-            Expr::Eq(binop) => Expr::Eq(replace_binop(binop)),
-
-            _ => self,
-        }
+            _ => e,
+        })
     }
 
-    pub fn factor(self) -> Self {
+    pub fn group_terms(self) -> Self {
         match self {
             Expr::Add(exprs) => {
                 let mut map = HashMap::<Expr, usize>::new();
@@ -553,21 +607,11 @@ impl Expr {
                 };
 
                 for e in exprs.into_iter() {
-                    if let Expr::Mul(mul) = &e {
-                        match mul.as_slice() {
-                            [Expr::Const(c), e] => {
-                                add_expr(e.clone(), *c as usize);
-                                continue;
-                            }
-                            [e, Expr::Const(c)] => {
-                                add_expr(e.clone(), *c as usize);
-                                continue;
-                            }
-                            _ => (),
-                        }
+                    if let Expr::Scale(c, e) = e {
+                        add_expr(*e, c as usize);
+                    } else {
+                        add_expr(e, 1);
                     }
-
-                    add_expr(e, 1);
                 }
 
                 let mut out = Vec::with_capacity(map.len());
@@ -577,11 +621,7 @@ impl Expr {
                         continue;
                     }
 
-                    if count == 1 {
-                        out.push(e);
-                    } else {
-                        out.push(Expr::Mul(vec![Expr::Const(count as u128), e]).arith_reduce());
-                    }
+                    out.push(((count as u128) * e).arith_reduce());
                 }
 
                 Expr::Add(out)
@@ -617,7 +657,18 @@ impl Expr {
             Expr::Neg(expr) => match *expr {
                 Expr::Neg(x) => x.arith_reduce(),
                 Expr::Const(v) => Expr::Const(-(v as i128) as u128),
-                _ => Expr::Mul(vec![Expr::Const(-1i128 as u128), expr.arith_reduce()]),
+                _ => (-1i128 as u128) * expr.arith_reduce(),
+            },
+
+            Expr::Scale(0, _) => Expr::Const(0),
+            Expr::Scale(1, e) => e.arith_reduce(),
+            Expr::Scale(c1, e) => match e.arith_reduce() {
+                Expr::Const(c2) => Expr::Const(c1.wrapping_mul(c2)),
+                Expr::Scale(c2, e) => c1.wrapping_mul(c2) * *e,
+                Expr::Add(sum) => {
+                    Expr::Add(sum.into_iter().map(|e| c1 * e).collect()).arith_reduce()
+                }
+                other => c1 * other,
             },
 
             Expr::And(exprs) => {
@@ -808,10 +859,12 @@ impl Expr {
                     flat.push(Expr::Const(c));
                 }
 
+                flat.sort();
+
                 match flat.len() {
                     0 => Expr::Const(0),
                     1 => flat.into_iter().next().unwrap(),
-                    _ => Expr::Add(flat).factor(),
+                    _ => Expr::Add(flat).group_terms(),
                 }
             }
 
@@ -842,6 +895,11 @@ impl Expr {
                             *c = c.wrapping_mul(v);
                         }
 
+                        Expr::Scale(v, e) => {
+                            *c = c.wrapping_mul(v);
+                            collect(*e, c, out);
+                        }
+
                         other => out.push(other),
                     }
                 }
@@ -857,33 +915,31 @@ impl Expr {
                     return Expr::Const(0);
                 }
 
-                if c != 1 {
-                    flat.push(Expr::Const(c));
-                }
-
                 // If any child is Add, distribute Mul over Add
                 if let Some(pos) = flat.iter().position(|f| matches!(f, Expr::Add(_))) {
                     if let Expr::Add(terms) = flat.remove(pos) {
                         let mut distributed_terms = Vec::new();
                         for term in terms {
                             let mut copy = flat.clone();
-                            copy.insert(pos, term);
+                            copy.insert(pos, c * term);
                             distributed_terms.push(Expr::Mul(copy).arith_reduce()); // recursive call, simplified incrementally
                         }
                         return Expr::Add(distributed_terms).arith_reduce();
                     }
                 }
 
+                flat.sort();
+
                 match flat.len() {
-                    0 => Expr::Const(1),
-                    1 => flat.into_iter().next().unwrap(),
-                    _ => Expr::Mul(flat),
+                    0 => Expr::Const(c),
+                    1 => c * flat.into_iter().next().unwrap(),
+                    _ => c * Expr::Mul(flat),
                 }
             }
 
             Expr::Shl(b) => match (*b.left, *b.right) {
                 (Expr::Const(c1), Expr::Const(c2)) => Expr::Const(c1 << c2),
-                (l, Expr::Const(1)) => (Expr::Const(2) * l).arith_reduce(),
+                (l, Expr::Const(n)) => (2u128.pow(n as u32) * l).arith_reduce(),
                 (l, r) => Expr::Shl(Binop::new(l.arith_reduce(), r.arith_reduce())),
             },
 

@@ -1,2 +1,2 @@
 [workspace]
-members = ["mbalib", "pybindings", "wasm"]
+members = ["mbalib", "pybindings", "wasm", "rumba"]

@@ -5,12 +5,8 @@ type Signature = [u128; 4];
 /// Is an expression a sclaed bitwise expression ?
 /// 2 * (v0 ^ v1) is a scaled bitwise expression
 fn is_scaled_bitwise(e: &Expr) -> bool {
-    if let Expr::Mul(m) = e {
-        match m.as_slice() {
-            [Expr::Const(_), e] => e.is_bitwise(),
-            [e, Expr::Const(_)] => e.is_bitwise(),
-            _ => false,
-        }
+    if let Expr::Scale(_, e) = e {
+        e.is_bitwise()
     } else {
         e.is_bitwise()
     }
@@ -19,7 +15,7 @@ fn is_scaled_bitwise(e: &Expr) -> bool {
 /// Is an expression a linear MBA
 fn is_linear(e: &Expr) -> bool {
     if let Expr::Add(sum) = e {
-        sum.iter().all(|e| is_scaled_bitwise(e))
+        sum.iter().all(|e| is_scaled_bitwise(e) || e.is_constant())
     } else {
         is_scaled_bitwise(e)
     }
@@ -48,8 +44,9 @@ fn repl(s: &Signature, from: u128, to: u128) -> Signature {
     s.map(|x| if x == from { to } else { x })
 }
 
+/// 2 variable version
 /// Finds coefficients to express an expression with the given signature as a linear combination of -1, x, y, x&y
-fn find_coeffs(v: &Signature) -> Signature {
+fn find_coeffs2(v: &Signature) -> Signature {
     let c0 = v[0];
     let c1 = v[2].wrapping_sub(v[0]);
     let c2 = v[1].wrapping_sub(v[0]);
@@ -60,8 +57,9 @@ fn find_coeffs(v: &Signature) -> Signature {
     [c0, c1, c2, c3]
 }
 
+/// 2 variable version
 /// Converts a truth table to the equivalent bitwise expression
-fn tt_to_expr(s: &Signature) -> Option<Expr> {
+fn tt_to_expr2(s: &Signature) -> Option<Expr> {
     let v0 = Expr::Var(0);
     let v1 = Expr::Var(1);
 
@@ -88,7 +86,7 @@ fn tt_to_expr(s: &Signature) -> Option<Expr> {
 }
 
 /// Finds a simpler solution for certain edge cases
-fn simple_solution(s: Signature) -> Option<Expr> {
+fn simple_solution2(s: Signature) -> Option<Expr> {
     let unique_values = count_values(&s);
 
     // Case 1
@@ -100,8 +98,9 @@ fn simple_solution(s: Signature) -> Option<Expr> {
         // Case 2
         if s[0] == 0 {
             let v = if s[1] == 0 { s[2] } else { s[1] };
+            let v = if v == 0 { s[3] } else { v };
             let s = div(&s, v);
-            return Some(Expr::Const(v) * tt_to_expr(&s).unwrap());
+            return Some(v * tt_to_expr2(&s).unwrap());
         }
 
         // Case 3
@@ -110,9 +109,9 @@ fn simple_solution(s: Signature) -> Option<Expr> {
             let b = if s[1] == a { s[2] } else { s[1] };
             let s = repl(&s, a, 0);
             let s = repl(&s, b, 1);
-            let e = tt_to_expr(&s).unwrap();
+            let e = tt_to_expr2(&s).unwrap();
 
-            return Some(-Expr::Const(a) * (!e));
+            return Some((-(a as i128) as u128) * (!e));
         }
 
         // Case 4
@@ -121,9 +120,9 @@ fn simple_solution(s: Signature) -> Option<Expr> {
 
         let s = repl(&s, a, 0);
         let s = repl(&s, b, 1);
-        let e = tt_to_expr(&s).unwrap();
+        let e = tt_to_expr2(&s).unwrap();
 
-        return Some(Expr::Const(a) + Expr::Const(b.wrapping_sub(a)) * e);
+        return Some(Expr::Const(a) + b.wrapping_sub(a) * e);
     }
 
     None
@@ -142,29 +141,127 @@ fn get_signature(e: &Expr) -> Signature {
 /// Attempts to turn an MBA Expression into a boolean expresion
 fn make_bool_expr(e: &Expr) -> Option<Expr> {
     let s = get_signature(e);
-    tt_to_expr(&s)
+    tt_to_expr2(&s)
 }
 
 /// Simplifies an MBA
 fn make_mba_expr(e: &Expr) -> Expr {
     let s = get_signature(e);
-    let coeffs = find_coeffs(&s);
+    let coeffs = find_coeffs2(&s);
 
     return -Expr::Const(coeffs[0])
-        + Expr::Const(coeffs[1]) * Expr::Var(0)
-        + Expr::Const(coeffs[2]) * Expr::Var(1)
-        + Expr::Const(coeffs[3]) * (Expr::Var(0) & Expr::Var(1));
+        + coeffs[1] * Expr::Var(0)
+        + coeffs[2] * Expr::Var(1)
+        + coeffs[3] * (Expr::Var(0) & Expr::Var(1));
+}
+
+/// Simplifies a linear MBA with 2 variables
+pub fn solve_linear2(e: &Expr) -> Expr {
+    let signature = get_signature(e);
+
+    // Finds a simpler solution for certain edge cases
+    if let Some(e) = simple_solution2(signature) {
+        e
+    } else {
+        make_mba_expr(e)
+    }
+}
+
+// Returns all sorted sublists of [0, t[ ordered by size
+fn sorted_sublists(t: usize) -> Vec<Vec<usize>> {
+    fn combine(
+        nums: &Vec<usize>,
+        sz: usize,
+        start: usize,
+        current: &mut Vec<usize>,
+        result: &mut Vec<Vec<usize>>,
+    ) {
+        if current.len() == sz {
+            result.push(current.clone());
+            return;
+        }
+        for i in start..nums.len() {
+            current.push(nums[i]);
+            combine(nums, sz, i + 1, current, result);
+            current.pop();
+        }
+    }
+
+    let nums: Vec<usize> = (0..t).collect();
+    let mut result = Vec::new();
+
+    for sz in 1..=nums.len() {
+        combine(&nums, sz, 0, &mut Vec::new(), &mut result);
+    }
+
+    result
+}
+
+// The amount of leading zeros in x's truth table
+fn leading_zeros(x: usize) -> u128 {
+    2u128.pow(x as u32)
+}
+
+fn sub_coeff(tt: &mut Vec<u128>, coeff: u128, index: usize, sublist: Vec<usize>) {
+    let are_vars_true = |i: usize| sublist[1..].iter().copied().all(|v| ((i >> v) & 1) == 1);
+
+    let gp_size = leading_zeros(sublist[0]) as usize;
+    let period = 2 * gp_size;
+
+    let mut start = index;
+    while start < tt.len() {
+        for i in start..(start + gp_size) {
+            if sublist.len() == 1 || are_vars_true(i) {
+                tt[i] = tt[i].wrapping_sub(coeff);
+            }
+        }
+        start += period;
+    }
 }
 
 /// Simplifies a linear MBA
 pub fn solve_linear(e: &Expr) -> Expr {
-    let signature = get_signature(e);
+    let vars = e.get_vars();
+    let t = vars.len();
 
-    // Finds a simpler solution for certain edge cases
-    if let Some(e) = simple_solution(signature) {
-        e
-    } else {
-        make_mba_expr(e)
+    // Special optimized case for t == 2
+    // if t == 2 {
+    //     return solve_linear2(e);
+    // }
+
+    let mut tt = e.truth_table(2, t);
+
+    let mut terms: Vec<Expr> = vec![];
+
+    // The constant term
+    let constant = tt[0];
+
+    if constant != 0 {
+        terms.push(Expr::Const(constant));
+
+        for v in &mut tt {
+            *v = v.wrapping_sub(constant);
+        }
+    }
+
+    for sublist in sorted_sublists(t) {
+        // The index of the first non zero value of this conjuction in the truth table
+        let index: u128 = sublist.iter().copied().map(leading_zeros).sum();
+        let coeff = tt[index as usize];
+
+        if coeff == 0 {
+            continue;
+        }
+
+        terms.push(coeff * Expr::And(sublist.iter().copied().map(|v| Expr::Var(v)).collect()));
+
+        sub_coeff(&mut tt, coeff, index as usize, sublist);
+    }
+
+    match terms.len() {
+        0 => Expr::Const(0),
+        1 => terms.into_iter().next().unwrap(),
+        _ => Expr::Add(terms),
     }
 }
 
@@ -212,4 +309,33 @@ fn solve_(e: Expr, shape: Shape) -> Expr {
 
 pub fn solve(e: Expr) -> Expr {
     solve_(e, Shape::Arithmetic)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*; // import the outer module
+
+    #[test]
+    fn test_sorted_sublists() {
+        assert_eq!(
+            sorted_sublists(4),
+            vec![
+                vec![0],
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![0, 1],
+                vec![0, 2],
+                vec![0, 3],
+                vec![1, 2],
+                vec![1, 3],
+                vec![2, 3],
+                vec![0, 1, 2],
+                vec![0, 1, 3],
+                vec![0, 2, 3],
+                vec![1, 2, 3],
+                vec![0, 1, 2, 3],
+            ]
+        )
+    }
 }

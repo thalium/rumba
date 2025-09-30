@@ -1,7 +1,7 @@
 use pest::Parser;
 use pest_derive::Parser;
 
-use crate::expr::{self, Binop, Expr};
+use crate::expr::{Binop, Expr};
 
 #[derive(Parser)]
 #[grammar = "expr.pest"]
@@ -22,8 +22,12 @@ macro_rules! build_nary {
 
 fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
     match pair.as_rule() {
-        Rule::number => {
-            let val = pair.as_str().parse::<u128>().unwrap();
+        Rule::dec_number => {
+            let val = u128::from_str_radix(pair.as_str(), 10).unwrap();
+            Expr::Const(val)
+        }
+        Rule::hex_number => {
+            let val = u128::from_str_radix(&pair.as_str()[2..], 16).unwrap();
             Expr::Const(val)
         }
         Rule::var => {
@@ -40,7 +44,7 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
                     let op = first.as_str();
                     let rhs = build_expr(inner.next().unwrap());
                     match op {
-                        "!" => Expr::Not(Box::new(rhs)),
+                        "~" | "!" => Expr::Not(Box::new(rhs)),
                         "-" => Expr::Neg(Box::new(rhs)),
                         _ => unreachable!(),
                     }
@@ -120,8 +124,7 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
                 lhs
             }
         }
-        Rule::expr => build_expr(pair.into_inner().next().unwrap()),
-        Rule::atom => build_expr(pair.into_inner().next().unwrap()),
+        Rule::number | Rule::expr | Rule::atom => build_expr(pair.into_inner().next().unwrap()),
         _ => panic!("{:?}", pair),
     }
 }

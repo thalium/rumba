@@ -18,9 +18,13 @@ shift    = { unary ~ (shift_op ~ unary)* }
 shift_op = { "<<" | ">>" }
 
 unary    = { unary_op ~ unary | atom }
-unary_op = { "!" | "-" }
+unary_op = { "!" | "~" | "-" }
 
 atom = { number | var | "(" ~ expr ~ ")" }
 
-number = @{ ASCII_DIGIT+ }
-var    = @{ "v" ~ ASCII_DIGIT+ }
+number = { hex_number | dec_number }
+
+dec_number = @{ ASCII_DIGIT+ }
+hex_number = @{ "0x" ~ ASCII_HEX_DIGIT+ }
+
+var = @{ "v" ~ ASCII_DIGIT+ }

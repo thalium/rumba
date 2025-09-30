@@ -1,6 +1,6 @@
-use rand::{Rng, rngs::ThreadRng, seq::IndexedRandom, thread_rng};
+use rand::{Rng, seq::IndexedRandom};
 
-use crate::expr::{self, Binop, Expr};
+use crate::expr::Expr;
 
 pub struct Node {
     pub id: usize,
@@ -53,7 +53,7 @@ pub struct MCTS {
     next_non_terminal: usize,
 
     pub playout_depth: usize,
-    pub C: f64,
+    pub c: f64,
     pub iterations: usize,
 }
 
@@ -165,7 +165,7 @@ impl MCTS {
             playout_depth: 1,
             next_non_terminal: 3,
             iterations: 100,
-            C: 0.5,
+            c: 0.5,
         }
     }
 
@@ -281,7 +281,7 @@ impl MCTS {
         for i in 0..self.iterations {
             let uct = |n: &Node| {
                 n.score
-                    + self.C * (self.iterations - i) as f64 / self.iterations as f64
+                    + self.c * (self.iterations - i) as f64 / self.iterations as f64
                         * ((n.parent.map_or(100 * n.visits, |p| self.nodes[p].visits) as f64)
                             .log2()
                             / n.visits as f64)
