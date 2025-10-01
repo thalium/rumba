@@ -1,5 +1,5 @@
 [package]
-name = "mba"
+name = "pyrumba"
 version = "0.1.0"
 edition = "2024"
 
@@ -8,5 +8,5 @@ pyo3 = { version = "0.26.0", features = ["extension-module"] }
 mbalib = { path = "../mbalib" }
 
 [lib]
-name = "mba"
+name = "pyrumba"
 crate-type = ["cdylib"]

@@ -1,6 +1,5 @@
 use std::panic;
 
-use log::error;
 use mbalib::{
     anf::ANFExpr,
     blast::blast,
@@ -8,7 +7,7 @@ use mbalib::{
     mcts::{IO, MCTS, Node},
     parser::parse_expr,
     poly::solve_polynomial,
-    symba::{self, solve_linear},
+    symba::{self},
 };
 use wasm_bindgen::prelude::*;
 
@@ -57,7 +56,7 @@ impl ExprWasm {
     }
 
     #[wasm_bindgen]
-    pub fn toString(&self) -> String {
+    pub fn to_string(&self) -> String {
         self.inner.to_string()
     }
 
@@ -269,8 +268,8 @@ impl ExprWasm {
     }
 
     #[wasm_bindgen]
-    pub fn latex(&self, n: u32, hex: bool) -> String {
-        self.inner.latex(n, hex)
+    pub fn repr(&self, n: u32, hex: bool, latex: bool) -> String {
+        self.inner.repr(n, hex, latex)
     }
 
     #[wasm_bindgen]

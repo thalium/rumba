@@ -1,17 +1,22 @@
 use mbalib::anf::ANF;
 use mbalib::anf::ANFExpr;
-use mbalib::expr::Expr;
+use mbalib::expr;
+use mbalib::parser::parse_expr;
+use mbalib::poly::solve_polynomial;
+use mbalib::symba::solve_linear;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 
+/// An MBA expression
 #[pyclass]
 #[derive(Clone)]
-struct PyExpr {
-    inner: Expr,
+struct Expr {
+    inner: expr::Expr,
 }
 
 #[pymethods]
-impl PyExpr {
+impl Expr {
+    /// Creates a new expression from an int or by parsing a string
     #[new]
     fn new(obj: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
         if let Some(py_obj) = obj {
@@ -19,6 +24,11 @@ impl PyExpr {
                 Ok(Self {
                     inner: value.into(),
                 })
+            } else if let Ok(value) = py_obj.extract::<String>() {
+                match parse_expr(&value) {
+                    Ok(inner) => Ok(Self { inner }),
+                    Err(e) => Err(pyo3::exceptions::PySyntaxError::new_err(e)),
+                }
             } else {
                 Err(pyo3::exceptions::PyTypeError::new_err(
                     "Expected an int for Expr constructor",
@@ -26,35 +36,58 @@ impl PyExpr {
             }
         } else {
             Ok(Self {
-                inner: Expr::Const(0),
+                inner: expr::Expr::Const(0),
             })
         }
     }
 
+    /// Creates a new variable
     #[staticmethod]
     fn var(id: usize) -> PyResult<Self> {
         Ok(Self {
-            inner: Expr::Var(id),
+            inner: expr::Expr::Var(id),
         })
     }
 
     fn to_int(&self) -> PyResult<u128> {
         match self.inner {
-            Expr::Const(c) => Ok(c),
+            expr::Expr::Const(c) => Ok(c),
             _ => Err(pyo3::exceptions::PyTypeError::new_err("Not an int")),
         }
     }
 
+    /// Evaluates an expression with the given variables
+    fn eval(&self, vars: Vec<u128>, n: u32) -> u128 {
+        self.inner.eval(&vars) % 2u128.pow(n)
+    }
+
+    /// Perform arithmetic reduction on this expression
     fn simplify(&mut self) {
         self.inner = self.inner.clone().arith_reduce();
     }
 
+    /// Attempts to solve this expression, treating it as a linear MBA
+    fn solve_linear(&mut self) -> Self {
+        Self {
+            inner: solve_linear(&self.inner),
+        }
+    }
+
+    /// Attempts to solve this expression, treating it as a polynomial MBA
+    fn solve_poly(&mut self) -> Self {
+        Self {
+            inner: solve_polynomial(self.inner.clone()),
+        }
+    }
+
+    /// Gets the ANF representation of the expression
     fn anf(&mut self, n: usize) -> PyANFExpr {
         PyANFExpr {
             inner: (self.inner.clone(), n).into(),
         }
     }
 
+    /// The number of nodes in this expression
     fn size(&self) -> usize {
         self.inner.size()
     }
@@ -62,8 +95,14 @@ impl PyExpr {
     fn __repr__(&self) -> String {
         format!("{}", self.inner)
     }
+
     fn __str__(&self) -> String {
         format!("{}", self.inner)
+    }
+
+    /// A string representation of the expression
+    fn repr(&self, bits: u32, hex: bool, latex: bool) -> String {
+        self.inner.repr(bits, hex, latex)
     }
 
     // Arithmetic operators
@@ -110,7 +149,7 @@ impl PyExpr {
             })
         } else if let Ok(rhs_int) = other.extract::<u128>() {
             Ok(Self {
-                inner: Expr::Const(rhs_int) - self.inner.clone(),
+                inner: expr::Expr::Const(rhs_int) - self.inner.clone(),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -134,6 +173,7 @@ impl PyExpr {
             ))
         }
     }
+
     fn __rmul__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
         self.__mul__(other)
     }
@@ -153,6 +193,7 @@ impl PyExpr {
             ))
         }
     }
+
     fn __rxor__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
         self.__xor__(other)
     }
@@ -192,6 +233,7 @@ impl PyExpr {
             ))
         }
     }
+
     fn __ror__(&self, other: Bound<'_, PyAny>) -> PyResult<Self> {
         self.__or__(other)
     }
@@ -207,6 +249,7 @@ impl PyExpr {
             ))
         }
     }
+
     fn __req__(&self, other: Bound<'_, PyAny>) -> PyResult<bool> {
         self.__eq__(other)
     }
@@ -225,13 +268,13 @@ impl PyExpr {
 
     fn __lshift__(&self, shift: u128) -> Self {
         Self {
-            inner: self.inner.clone() << Expr::Const(shift),
+            inner: self.inner.clone() << expr::Expr::Const(shift),
         }
     }
 
     fn __rshift__(&self, shift: u128) -> Self {
         Self {
-            inner: self.inner.clone() >> Expr::Const(shift),
+            inner: self.inner.clone() >> expr::Expr::Const(shift),
         }
     }
 }
@@ -523,7 +566,7 @@ impl PyANFExpr {
 }
 
 #[pymodule]
-mod mba {
+mod pyrumba {
     #[pymodule_export]
     use super::PyANF;
 
@@ -531,5 +574,5 @@ mod mba {
     use super::PyANFExpr;
 
     #[pymodule_export]
-    use super::PyExpr;
+    use super::Expr;
 }

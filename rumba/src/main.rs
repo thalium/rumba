@@ -44,7 +44,7 @@ fn main() {
     match parse_expr(&expr) {
         Ok(e) => {
             let sol = solve_polynomial(e.clone());
-            println!("{}", sol.latex(bits, hex));
+            println!("{}", sol.repr(bits, hex, false));
 
             if matches.get_flag("test") {
                 let mut count = 0;

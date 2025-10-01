@@ -157,54 +157,7 @@ pub type TruthTable = [u128; 256 * 256];
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let to_string = |e: &Expr| e.parenthesize(self, e.to_string());
-
-        let mut join = |exprs: &Vec<Expr>, c: &str| {
-            write!(
-                f,
-                "{}",
-                exprs.iter().map(to_string).collect::<Vec<String>>().join(c)
-            )
-        };
-
-        let draw_binop = |f: &mut fmt::Formatter<'_>, b: &Binop, c: &str| {
-            write!(f, "{} {} {}", b.left.to_string(), c, b.right.to_string())
-        };
-
-        match self {
-            Expr::Var(i) => write!(f, "v{}", i),
-            Expr::Const(c) => {
-                if *c as i128 >= 0 {
-                    write!(f, "{}", c)
-                } else {
-                    write!(f, "({})", *c as i128)
-                }
-            }
-            Expr::Not(expr) => write!(f, "!{}", to_string(expr)),
-            Expr::Neg(expr) => write!(f, "-{}", to_string(expr)),
-            Expr::Scale(a, expr) => write!(f, "{} * {}", a, to_string(expr)),
-
-            Expr::And(exprs) => join(exprs, " & "),
-            Expr::Or(exprs) => join(exprs, " | "),
-            Expr::Xor(exprs) => join(exprs, " ^ "),
-            Expr::Add(exprs) => join(exprs, " + "),
-            Expr::Sub(exprs) => join(exprs, " - "),
-            Expr::Mul(exprs) => join(exprs, " * "),
-
-            Expr::Shl(binop) => draw_binop(f, binop, " << "),
-            Expr::Shr(binop) => draw_binop(f, binop, " >> "),
-            Expr::RshiftS(binop) => draw_binop(f, binop, " >>s "),
-            Expr::Le(binop) => draw_binop(f, binop, " <= "),
-            Expr::Lt(binop) => draw_binop(f, binop, " < "),
-            Expr::Ge(binop) => draw_binop(f, binop, " >= "),
-            Expr::Gt(binop) => draw_binop(f, binop, " > "),
-            Expr::LeS(binop) => draw_binop(f, binop, " <=s "),
-            Expr::LtS(binop) => draw_binop(f, binop, " <s "),
-            Expr::GeS(binop) => draw_binop(f, binop, " >=s "),
-            Expr::GtS(binop) => draw_binop(f, binop, " >s "),
-            Expr::Ne(binop) => draw_binop(f, binop, " != "),
-            Expr::Eq(binop) => draw_binop(f, binop, " == "),
-        }
+        f.write_str(&self.repr(32, true, false))
     }
 }
 
@@ -213,6 +166,33 @@ impl<T: Into<u128>> From<T> for Expr {
         let value: u128 = value.into();
 
         Expr::Const(value)
+    }
+}
+
+/// Displays a constant properly (with the best sign)
+fn display_const(c: u128, n: u32, hex: bool, latex: bool) -> String {
+    let mask = if n == 128 {
+        u128::MAX
+    } else {
+        (1u128 << n) - 1
+    };
+
+    let val = c & mask;
+    let sign_bit = 1u128 << (n - 1);
+
+    if val & sign_bit != 0 {
+        let signed = (val as i128) - (1i128 << n);
+        match (hex, latex) {
+            (true, true) => format!("(-\\mathrm{{{:#x}}})", -signed),
+            (true, false) => format!("(-{:#x})", -signed),
+            _ => format!("(-{})", -signed),
+        }
+    } else {
+        match (hex, latex) {
+            (true, true) => format!("\\mathrm{{{:#x}}}", val),
+            (true, false) => format!("{:#x}", val),
+            _ => format!("{}", val),
+        }
     }
 }
 
@@ -281,7 +261,7 @@ impl Expr {
                 .map(|e| e.eval(vars))
                 .fold(1, |x, y| x.wrapping_mul(y)),
 
-            Expr::Scale(v, e) => *v * e.eval(vars),
+            Expr::Scale(v, e) => v.wrapping_mul(e.eval(vars)),
 
             Expr::Not(e) => !e.eval(vars),
 
@@ -416,7 +396,7 @@ impl Expr {
         }
     }
 
-    // Parenthesizes an expression if needed
+    /// Parenthesizes an expression if needed
     fn parenthesize(&self, parent: &Expr, s: String) -> String {
         if parent.precedence() < self.precedence() {
             format!("({})", s)
@@ -425,66 +405,130 @@ impl Expr {
         }
     }
 
-    // A latex representation of the expression
-    pub fn latex(&self, n: u32, hex: bool) -> String {
-        let to_latex = |e: &Expr| e.parenthesize(self, e.latex(n, hex));
+    fn symbol(&self, latex: bool) -> &str {
+        match (self, latex) {
+            (Expr::Var(_), _) | (Expr::Const(_), _) => "",
+
+            (Expr::Not(_), true) => "\\neg",
+            (Expr::Not(_), false) => "~",
+
+            (Expr::Neg(_), _) => "-",
+
+            (Expr::Scale(_, _), true) => "\\cdot",
+            (Expr::Scale(_, _), false) => "*",
+
+            (Expr::And(_), true) => "\\land",
+            (Expr::And(_), false) => "&",
+
+            (Expr::Or(_), true) => "\\lor",
+            (Expr::Or(_), false) => "|",
+
+            (Expr::Xor(_), true) => "\\oplus",
+            (Expr::Xor(_), false) => "^",
+
+            (Expr::Shl(_), true) => "\\ll",
+            (Expr::Shl(_), false) => "<<",
+
+            (Expr::Shr(_), true) => "\\gg",
+            (Expr::Shr(_), false) => ">>",
+
+            (Expr::RshiftS(_), true) => "\\gg_s",
+            (Expr::RshiftS(_), false) => ">>s",
+
+            (Expr::Le(_), true) => "\\le",
+            (Expr::Le(_), false) => "<=",
+
+            (Expr::Lt(_), _) => "<",
+
+            (Expr::Ge(_), true) => "\\ge",
+            (Expr::Ge(_), false) => ">=",
+
+            (Expr::Gt(_), _) => ">",
+
+            (Expr::LeS(_), true) => "\\le_s",
+            (Expr::LeS(_), false) => "<=s",
+
+            (Expr::LtS(_), true) => "<_s",
+            (Expr::LtS(_), false) => "<",
+
+            (Expr::GeS(_), true) => "\\ge_s",
+            (Expr::GeS(_), false) => ">=s",
+
+            (Expr::GtS(_), true) => ">_s",
+            (Expr::GtS(_), false) => ">s",
+
+            (Expr::Ne(_), true) => "\\ne",
+            (Expr::Ne(_), false) => "",
+
+            (Expr::Eq(_), _) => "=",
+
+            (Expr::Add(_), _) => "+",
+
+            (Expr::Sub(_), _) => "-",
+
+            (Expr::Mul(_), true) => "\\cdot",
+            (Expr::Mul(_), false) => "*",
+        }
+    }
+
+    /// A string representation of this expression
+    pub fn repr(&self, n: u32, hex: bool, latex: bool) -> String {
+        let recurs = |e: &Expr| e.parenthesize(self, e.repr(n, hex, latex));
 
         let join = |exprs: &Vec<Expr>, c: &str| {
             format!(
                 "{}",
-                exprs.iter().map(to_latex).collect::<Vec<String>>().join(c)
+                exprs.iter().map(recurs).collect::<Vec<String>>().join(c)
             )
         };
 
-        let display_const = |c: u128| {
-            // mask to keep only n bits
-            let mask = if n == 128 {
-                u128::MAX
-            } else {
-                (1u128 << n) - 1
-            };
-
-            let val = c & mask;
-            let sign_bit = 1u128 << (n - 1);
-
-            if val & sign_bit != 0 {
-                let signed = (val as i128) - (1i128 << n);
-                if hex {
-                    format!("(-\\mathrm{{{:#x}}})", -signed)
-                } else {
-                    format!("(-{})", -signed)
-                }
-            } else {
-                if hex {
-                    format!("\\mathrm{{{:#x}}}", val)
-                } else {
-                    format!("{}", val)
-                }
-            }
-        };
-
         match self {
-            Expr::Var(i) => format!("v_{{{}}}", i),
-            Expr::Const(c) => display_const(*c),
-            Expr::Not(e) => format!("\\neg {}", to_latex(e)),
-            Expr::Neg(e) => format!("-{}", to_latex(e)),
-            Expr::Scale(c, e) => format!("{} \\cdot {}", display_const(*c), to_latex(e)),
-
-            Expr::And(exprs) => join(exprs, " \\wedge "),
-            Expr::Or(exprs) => join(exprs, " \\vee "),
-            Expr::Xor(exprs) => join(exprs, " \\oplus "),
-            Expr::Add(exprs) => join(exprs, " + ").replace("+ -", "-"),
-            Expr::Sub(exprs) => join(exprs, " - "),
-            Expr::Mul(exprs) => join(exprs, " \\cdot "),
-
-            Expr::Shl(Binop { left, right }) => {
-                format!("{} \\gg {}", to_latex(left), to_latex(right))
-            }
-            Expr::Shr(Binop { left, right }) => {
-                format!("{} \\ll {}", to_latex(left), to_latex(right))
+            Expr::Var(v) => {
+                if latex {
+                    format!("v_{{{}}}", v)
+                } else {
+                    format!("v{}", v)
+                }
             }
 
-            _ => panic!("MISSING LATEX"),
+            Expr::Const(c) => display_const(*c, n, hex, latex),
+
+            Expr::Scale(c, expr) => format!(
+                "{} {} {}",
+                display_const(*c, n, hex, latex),
+                self.symbol(latex),
+                recurs(&*expr)
+            ),
+
+            Expr::Not(expr) | Expr::Neg(expr) => {
+                format!("{} {}", self.symbol(latex), recurs(&*expr))
+            }
+
+            Expr::And(exprs)
+            | Expr::Or(exprs)
+            | Expr::Xor(exprs)
+            | Expr::Add(exprs)
+            | Expr::Sub(exprs)
+            | Expr::Mul(exprs) => join(exprs, &format!(" {} ", self.symbol(latex))),
+
+            Expr::Shl(binop)
+            | Expr::Shr(binop)
+            | Expr::RshiftS(binop)
+            | Expr::Le(binop)
+            | Expr::Lt(binop)
+            | Expr::Ge(binop)
+            | Expr::Gt(binop)
+            | Expr::LeS(binop)
+            | Expr::LtS(binop)
+            | Expr::GeS(binop)
+            | Expr::GtS(binop)
+            | Expr::Ne(binop)
+            | Expr::Eq(binop) => format!(
+                "{} {} {}",
+                recurs(&*binop.left),
+                self.symbol(latex),
+                recurs(&*binop.right)
+            ),
         }
     }
 
