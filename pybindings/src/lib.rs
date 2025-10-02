@@ -1,6 +1,7 @@
 use mbalib::anf::ANF;
 use mbalib::anf::ANFExpr;
 use mbalib::expr;
+use mbalib::nonpoly::solve_non_poly;
 use mbalib::parser::parse_expr;
 use mbalib::poly::solve_polynomial;
 use mbalib::symba::solve_linear;
@@ -76,7 +77,14 @@ impl Expr {
     /// Attempts to solve this expression, treating it as a polynomial MBA
     fn solve_poly(&mut self) -> Self {
         Self {
-            inner: solve_polynomial(self.inner.clone()),
+            inner: solve_polynomial(&self.inner),
+        }
+    }
+
+    /// Attempts to solve this expression, treating it as a non polynomial MBA
+    fn solve_non_poly(&mut self) -> Self {
+        Self {
+            inner: solve_non_poly(&self.inner),
         }
     }
 

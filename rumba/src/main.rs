@@ -1,5 +1,7 @@
+use std::cmp::max;
+
 use clap::{Arg, Command};
-use mbalib::{parser::parse_expr, poly::solve_polynomial};
+use mbalib::{nonpoly::solve_non_poly, parser::parse_expr};
 
 fn main() {
     let matches = Command::new("text-tool")
@@ -43,13 +45,15 @@ fn main() {
 
     match parse_expr(&expr) {
         Ok(e) => {
-            let sol = solve_polynomial(e.clone());
+            let sol = solve_non_poly(&e);
             println!("{}", sol.repr(bits, hex, false));
 
             if matches.get_flag("test") {
                 let mut count = 0;
-                let vars = e.get_vars();
-                let max_var = vars.iter().copied().max().unwrap_or(0);
+                let max_var = max(
+                    e.get_vars().iter().copied().max().unwrap_or(0),
+                    sol.get_vars().iter().copied().max().unwrap_or(0),
+                );
 
                 for _ in 0..1000 {
                     let mut vars = vec![];

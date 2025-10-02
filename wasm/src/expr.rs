@@ -5,6 +5,7 @@ use mbalib::{
     blast::blast,
     expr::{Binop, Expr},
     mcts::{IO, MCTS, Node},
+    nonpoly::solve_non_poly,
     parser::parse_expr,
     poly::solve_polynomial,
     symba::{self},
@@ -77,7 +78,14 @@ impl ExprWasm {
     #[wasm_bindgen]
     pub fn solvep(&self) -> Self {
         Self {
-            inner: solve_polynomial(self.inner.clone()),
+            inner: solve_polynomial(&self.inner),
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn solvenp(&self) -> Self {
+        Self {
+            inner: solve_non_poly(&self.inner),
         }
     }
 

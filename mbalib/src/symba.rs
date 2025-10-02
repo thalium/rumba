@@ -1,3 +1,5 @@
+use std::{collections::HashMap, usize};
+
 use crate::expr::Expr;
 
 type Signature = [u128; 4];
@@ -220,15 +222,7 @@ fn sub_coeff(tt: &mut Vec<u128>, coeff: u128, index: usize, sublist: Vec<usize>)
 }
 
 /// Simplifies a linear MBA
-pub fn solve_linear(e: &Expr) -> Expr {
-    let vars = e.get_vars();
-    let t = vars.len();
-
-    // Special optimized case for t == 2
-    // if t == 2 {
-    //     return solve_linear2(e);
-    // }
-
+fn solve_linear_inner(e: &Expr, t: usize) -> Expr {
     let mut tt = e.truth_table(2, t);
 
     let mut terms: Vec<Expr> = vec![];
@@ -263,6 +257,55 @@ pub fn solve_linear(e: &Expr) -> Expr {
         1 => terms.into_iter().next().unwrap(),
         _ => Expr::Add(terms),
     }
+}
+
+fn reduce_vars(
+    e: &Expr,
+    new_vars: &mut HashMap<usize, usize>,
+    old_vars: &mut HashMap<usize, usize>,
+    t: &mut usize,
+) -> Expr {
+    match e {
+        Expr::Var(v) => {
+            if let Some(v) = new_vars.get(&v) {
+                Expr::Var(*v)
+            } else {
+                old_vars.insert(*t, *v);
+                new_vars.insert(*v, *t);
+                let v = *t;
+                *t += 1;
+                Expr::Var(v)
+            }
+        }
+
+        _ => e.clone().map(|e| reduce_vars(&e, new_vars, old_vars, t)),
+    }
+}
+
+// Resets the original variables
+fn reset_vars(e: &Expr, old_vars: &HashMap<usize, usize>) -> Expr {
+    match e {
+        Expr::Var(v) => {
+            let v = old_vars.get(&v).unwrap();
+            Expr::Var(*v)
+        }
+
+        _ => e.clone().map(|e| reset_vars(&e, old_vars)),
+    }
+}
+
+/// Simplifies a linear MBA
+pub fn solve_linear(e: &Expr) -> Expr {
+    let mut new_vars = HashMap::new();
+    let mut old_vars = HashMap::new();
+    let mut t = 0;
+
+    // Reduce the number of variables in the expression
+    let e = reduce_vars(&e, &mut new_vars, &mut old_vars, &mut t);
+
+    let e = solve_linear_inner(&e, t);
+
+    reset_vars(&e, &old_vars)
 }
 
 #[derive(Clone, Copy)]

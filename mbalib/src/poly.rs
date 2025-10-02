@@ -43,28 +43,28 @@ impl DegVar {
     }
 }
 
-fn make_linear(e: Expr, vars: &mut DegVar, deg: usize) -> Expr {
-    let vec_map = |exprs: Vec<Expr>, vars: &mut DegVar| {
+fn make_linear(e: &Expr, vars: &mut DegVar, deg: usize) -> Expr {
+    let vec_map = |exprs: &Vec<Expr>, vars: &mut DegVar| {
         exprs
             .into_iter()
-            .map(|e| make_linear(e, vars, deg))
+            .map(|e| make_linear(&e, vars, deg))
             .collect()
     };
 
-    let binop_map = |b: Binop, vars: &mut DegVar| {
+    let binop_map = |b: &Binop, vars: &mut DegVar| {
         Binop::new(
-            make_linear(*b.left, vars, deg),
-            make_linear(*b.right, vars, deg),
+            make_linear(&*b.left, vars, deg),
+            make_linear(&*b.right, vars, deg),
         )
     };
 
     match e {
-        Expr::Var(v) => Expr::Var(vars.encode(v, deg)),
-        Expr::Const(_) => e,
+        Expr::Var(v) => Expr::Var(vars.encode(*v, deg)),
+        Expr::Const(_) => e.clone(),
 
-        Expr::Not(expr) => !make_linear(*expr, vars, deg),
-        Expr::Neg(expr) => -make_linear(*expr, vars, deg),
-        Expr::Scale(v, expr) => v * make_linear(*expr, vars, deg),
+        Expr::Not(expr) => !make_linear(&*expr, vars, deg),
+        Expr::Neg(expr) => -make_linear(&*expr, vars, deg),
+        Expr::Scale(v, expr) => *v * make_linear(&*expr, vars, deg),
 
         Expr::And(exprs) => Expr::And(vec_map(exprs, vars)),
         Expr::Or(exprs) => Expr::Or(vec_map(exprs, vars)),
@@ -164,9 +164,9 @@ fn make_polynomial(e: Expr, vars: &mut DegVar) -> Expr {
     }
 }
 
-pub fn solve_polynomial(mut e: Expr) -> Expr {
+pub fn solve_polynomial(e: &Expr) -> Expr {
     let mut vars = DegVar::new(0);
-    e = make_linear(e, &mut vars, 0);
+    let mut e = make_linear(e, &mut vars, 0);
 
     error!("LINEAR: {}", e);
 

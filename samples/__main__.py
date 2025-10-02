@@ -19,7 +19,7 @@ def test_line(line: str):
     mba = Expr(mba)
 
     start = time.perf_counter()
-    solution = mba.solve_poly()
+    solution = mba.solve_non_poly()
     elapsed = time.perf_counter() - start
 
     # Test the IO equivilancy
