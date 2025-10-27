@@ -45,7 +45,7 @@ fn main() {
 
     match parse_expr(&expr) {
         Ok(e) => {
-            let sol = solve_non_poly(&e);
+            let sol = solve_non_poly(&e, bits);
             println!("{}", sol.repr(bits, hex, false));
 
             if matches.get_flag("test") {

@@ -63,28 +63,30 @@ impl Expr {
     }
 
     /// Perform arithmetic reduction on this expression
-    fn simplify(&mut self) {
-        self.inner = self.inner.clone().arith_reduce();
+    fn simplify(&mut self) -> Self {
+        Self {
+            inner: self.inner.clone().arith_reduce(),
+        }
     }
 
     /// Attempts to solve this expression, treating it as a linear MBA
-    fn solve_linear(&mut self) -> Self {
+    fn solve_linear(&mut self, n: u32) -> Self {
         Self {
-            inner: solve_linear(&self.inner),
+            inner: solve_linear(&self.inner, n),
         }
     }
 
     /// Attempts to solve this expression, treating it as a polynomial MBA
-    fn solve_poly(&mut self) -> Self {
+    fn solve_poly(&mut self, n: u32) -> Self {
         Self {
-            inner: solve_polynomial(&self.inner),
+            inner: solve_polynomial(&self.inner, n),
         }
     }
 
     /// Attempts to solve this expression, treating it as a non polynomial MBA
-    fn solve_non_poly(&mut self) -> Self {
+    fn solve_non_poly(&mut self, n: u32) -> Self {
         Self {
-            inner: solve_non_poly(&self.inner),
+            inner: solve_non_poly(&self.inner, n),
         }
     }
 
@@ -106,6 +108,10 @@ impl Expr {
 
     fn __str__(&self) -> String {
         format!("{}", self.inner)
+    }
+
+    fn __debug__(&self) -> String {
+        format!("{:?}", self.inner)
     }
 
     /// A string representation of the expression
@@ -248,9 +254,9 @@ impl Expr {
 
     fn __eq__(&self, other: Bound<'_, PyAny>) -> PyResult<bool> {
         if let Ok(rhs) = other.extract::<Self>() {
-            Ok(self.inner == rhs.inner)
+            Ok(self.inner.clone() == rhs.inner.clone())
         } else if let Ok(rhs_int) = other.extract::<u128>() {
-            Ok(self.inner == rhs_int.into())
+            Ok(self.inner.clone() == expr::Expr::Const(rhs_int))
         } else {
             Err(exceptions::PyTypeError::new_err(
                 "Operand must be ANFExpr or int",

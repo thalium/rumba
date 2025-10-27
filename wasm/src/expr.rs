@@ -69,23 +69,23 @@ impl ExprWasm {
     }
 
     #[wasm_bindgen]
-    pub fn solve(&self) -> Self {
+    pub fn solve(&self, n: u32) -> Self {
         Self {
-            inner: symba::solve_linear(&self.inner),
+            inner: symba::solve_linear(&self.inner, n),
         }
     }
 
     #[wasm_bindgen]
-    pub fn solvep(&self) -> Self {
+    pub fn solvep(&self, n: u32) -> Self {
         Self {
-            inner: solve_polynomial(&self.inner),
+            inner: solve_polynomial(&self.inner, n),
         }
     }
 
     #[wasm_bindgen]
-    pub fn solvenp(&self) -> Self {
+    pub fn solvenp(&self, n: u32) -> Self {
         Self {
-            inner: solve_non_poly(&self.inner),
+            inner: solve_non_poly(&self.inner, n),
         }
     }
 

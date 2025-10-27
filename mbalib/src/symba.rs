@@ -1,25 +1,65 @@
+use log::error;
 use std::{collections::HashMap, usize};
 
 use crate::expr::Expr;
 
 type Signature = [u128; 4];
 
-/// Is an expression a sclaed bitwise expression ?
-/// 2 * (v0 ^ v1) is a scaled bitwise expression
-fn is_scaled_bitwise(e: &Expr) -> bool {
-    if let Expr::Scale(_, e) = e {
-        e.is_bitwise()
-    } else {
-        e.is_bitwise()
+pub fn is_bitwise(e: &Expr, n: u32) -> bool {
+    match &e {
+        Expr::Const(c) => {
+            if c % (2u128.pow(n)) == 0 {
+                true
+            } else if (c.wrapping_add(1)) % (2u128.pow(n)) == 0 {
+                true
+            } else {
+                false
+            }
+        }
+
+        Expr::Var(_) => true,
+
+        Expr::Not(e) => is_bitwise(e, n),
+
+        Expr::And(exprs) | Expr::Or(exprs) | Expr::Xor(exprs) => {
+            exprs.iter().all(|e| is_bitwise(e, n))
+        }
+
+        Expr::Add(_) | Expr::Scale(_, _) => {
+            if is_linear(e, n) && calc_signature(e, n).iter().all(|&x| x == 0 || x == 1) {
+                // error!("Found complex bitwise expression: {}", e);
+                true
+            } else {
+                // error!(
+                //     "Found non linear component {}: {:?}",
+                //     e,
+                //     calc_signature(e, n).iter().map(|&x| x == 0 || x == 1)
+                // );
+                false
+            }
+        }
+
+        _ => {
+            // error!("RECURSION ON {:?}", e);
+            false
+        }
     }
 }
 
+/// Is an expression a sclaed bitwise expression ?
+/// 2 * (v0 ^ v1) is a scaled bitwise expression
+fn is_scaled_bitwise(e: &Expr, n: u32) -> bool {
+    let e = if let Expr::Scale(_, e) = e { e } else { e };
+    is_bitwise(e, n)
+}
+
 /// Is an expression a linear MBA
-fn is_linear(e: &Expr) -> bool {
+pub fn is_linear(e: &Expr, n: u32) -> bool {
     if let Expr::Add(sum) = e {
-        sum.iter().all(|e| is_scaled_bitwise(e) || e.is_constant())
+        sum.iter()
+            .all(|e| is_scaled_bitwise(e, n) || e.is_constant())
     } else {
-        is_scaled_bitwise(e)
+        is_scaled_bitwise(e, n)
     }
 }
 
@@ -222,8 +262,12 @@ fn sub_coeff(tt: &mut Vec<u128>, coeff: u128, index: usize, sublist: Vec<usize>)
 }
 
 /// Simplifies a linear MBA
-fn solve_linear_inner(e: &Expr, t: usize) -> Expr {
-    let mut tt = e.truth_table(2, t);
+fn solve_linear_inner(e: &Expr, t: usize, n: u32) -> Expr {
+    let mut tt: Vec<u128> = e
+        .truth_table(2, t)
+        .iter()
+        .map(|&x| x % (2u128.pow(n)))
+        .collect();
 
     let mut terms: Vec<Expr> = vec![];
 
@@ -295,7 +339,7 @@ fn reset_vars(e: &Expr, old_vars: &HashMap<usize, usize>) -> Expr {
 }
 
 /// Simplifies a linear MBA
-pub fn solve_linear(e: &Expr) -> Expr {
+pub fn solve_linear(e: &Expr, n: u32) -> Expr {
     let mut new_vars = HashMap::new();
     let mut old_vars = HashMap::new();
     let mut t = 0;
@@ -303,55 +347,23 @@ pub fn solve_linear(e: &Expr) -> Expr {
     // Reduce the number of variables in the expression
     let e = reduce_vars(&e, &mut new_vars, &mut old_vars, &mut t);
 
-    let e = solve_linear_inner(&e, t);
+    let e = solve_linear_inner(&e, t, n);
 
     reset_vars(&e, &old_vars)
 }
 
-#[derive(Clone, Copy)]
-enum Shape {
-    Arithmetic,
-    Boolean,
-}
+pub fn calc_signature(e: &Expr, n: u32) -> Vec<u128> {
+    let mut new_vars = HashMap::new();
+    let mut old_vars = HashMap::new();
+    let mut t = 0;
 
-fn solve_(e: Expr, shape: Shape) -> Expr {
-    match e {
-        // Recursion end
-        // TODO: When on a constant, we might need to introduce a variable
-        Expr::Var(_) | Expr::Const(_) => return e,
-        _ => (),
-    }
+    // Reduce the number of variables in the expression
+    let e = reduce_vars(&e, &mut new_vars, &mut old_vars, &mut t);
 
-    let e = e.arith_reduce();
-
-    if is_linear(&e) {
-        match shape {
-            Shape::Arithmetic => make_mba_expr(&e),
-            Shape::Boolean => {
-                if let Some(e) = make_bool_expr(&e) {
-                    e
-                } else {
-                    // TODO:
-                    // Expr::Var(3)
-                    panic!("AAA");
-                }
-            }
-        }
-    } else {
-        // We want to match the parent's type
-        let shape = if e.is_arithmetic() {
-            Shape::Arithmetic
-        } else {
-            Shape::Boolean
-        };
-
-        let e = e.map(|e| solve_(e, shape));
-        e.arith_reduce()
-    }
-}
-
-pub fn solve(e: Expr) -> Expr {
-    solve_(e, Shape::Arithmetic)
+    e.truth_table(2, t)
+        .iter()
+        .map(|&x| x % (2u128.pow(n)))
+        .collect()
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
+use log::error;
 use std::collections::HashMap;
 
-use crate::{expr::Expr, poly::solve_polynomial};
+use crate::{expr::Expr, poly::solve_polynomial, symba::is_bitwise};
 
 struct VarExpr {
     forwards: HashMap<usize, Expr>,
@@ -17,14 +18,21 @@ impl VarExpr {
         }
     }
 
-    fn make_bitwise(&mut self, e: Expr) -> Expr {
+    fn make_bitwise(&mut self, e: Expr, n: u32) -> Expr {
         let mask = 1 << 32 - 1;
 
-        if e.is_bitwise() {
+        if is_bitwise(&e, n) {
+            // e is bitwise
             return e;
         }
 
-        let s = solve_non_poly(&e);
+        let s = solve_non_poly(&e, n);
+
+        // TODO: remove this ?
+        if is_bitwise(&s, n) {
+            // e is bitwise
+            return s;
+        }
 
         if let Some(v) = self.back.get(&s) {
             Expr::Var(*v)
@@ -43,22 +51,22 @@ impl VarExpr {
     }
 }
 
-fn np2p(e: Expr, var2expr: &mut VarExpr) -> Expr {
-    let make_vec_polynomial = |exprs: Vec<Expr>, var2expr: &mut VarExpr| {
+fn np2p(e: Expr, var2expr: &mut VarExpr, n: u32) -> Expr {
+    let make_vec_bitwise = |exprs: Vec<Expr>, var2expr: &mut VarExpr| {
         exprs
             .into_iter()
-            .map(|e| var2expr.make_bitwise(e))
+            .map(|e| var2expr.make_bitwise(e, n))
             .collect()
     };
 
     e.map(|e| match e {
-        Expr::Not(expr) => !var2expr.make_bitwise(*expr),
+        Expr::Not(expr) => !var2expr.make_bitwise(*expr, n),
 
-        Expr::And(exprs) => Expr::And(make_vec_polynomial(exprs, var2expr)),
-        Expr::Or(exprs) => Expr::Or(make_vec_polynomial(exprs, var2expr)),
-        Expr::Xor(exprs) => Expr::Xor(make_vec_polynomial(exprs, var2expr)),
+        Expr::And(exprs) => Expr::And(make_vec_bitwise(exprs, var2expr)),
+        Expr::Or(exprs) => Expr::Or(make_vec_bitwise(exprs, var2expr)),
+        Expr::Xor(exprs) => Expr::Xor(make_vec_bitwise(exprs, var2expr)),
 
-        _ => np2p(e, var2expr),
+        _ => np2p(e, var2expr, n),
     })
 }
 
@@ -75,18 +83,22 @@ fn p2np(e: Expr, var2expr: &VarExpr) -> Expr {
     })
 }
 
-pub fn solve_non_poly(e: &Expr) -> Expr {
+pub fn solve_non_poly(e: &Expr, n: u32) -> Expr {
+    let e = e.clone().arith_reduce();
+
     let mut var2expr = VarExpr::new(e.get_vars().iter().copied().max().unwrap_or(0) + 1);
 
-    let e = np2p(e.clone(), &mut var2expr);
+    // error!("Solving non polynomial problem: {}", e);
 
-    println!("Created polynomial problem: {}", e);
+    let e = np2p(e, &mut var2expr, n);
 
-    let e = solve_polynomial(&e);
+    // error!("Created polynomial problem: {}", e);
 
-    println!("Found polynomial solution: {}", e);
+    let e = solve_polynomial(&e, n);
+
+    // error!("Found polynomial solution: {}", e);
 
     let e = p2np(e, &var2expr);
 
-    e.arith_reduce()
+    e.arith_reduce().mod_simplify(n)
 }

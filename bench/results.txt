@@ -1,0 +1,33 @@
+Got 7 datasets to test..., mode GENERAL
+------------- neureduce
+  * average duration: 0.001 s / 10000
+  * quantiles: [1e-04 4e-04 6e-04 8e-04 3e-03]
+GENERAL: OK 10000, OKZ 0, Z3 0, TO 0, NG 0, NC 0, err 0
+------------- mba_obf_linear
+  * average duration: 0.002 s / 1000
+  * quantiles: [2e-04 3e-04 7e-04 3e-03 6e-03]
+GENERAL: OK 1000, OKZ 0, Z3 0, TO 0, NG 0, NC 0, err 0
+------------- mba_obf_nonlinear
+  * average duration: 0.001 s / 1000
+  * quantiles: [2e-04 6e-04 8e-04 1e-03 1e-02]
+GENERAL: OK 1000, OKZ 0, Z3 0, TO 0, NG 0, NC 0, err 0
+------------- syntia
+  * average duration: 0.000 s / 500
+  * quantiles: [6e-05 1e-04 2e-04 3e-04 2e-03]
+GENERAL: OK 500, OKZ 0, Z3 0, TO 0, NG 0, NC 0, err 0
+------------- mba_flatten
+  * average duration: 0.002 s / 3000
+  * quantiles: [1e-04 4e-04 6e-04 2e-03 7e-02]
+GENERAL: OK 3000, OKZ 0, Z3 0, TO 0, NG 0, NC 0, err 0
+------------- qsynth_ea
+  * average duration: 0.006 s / 500
+  * quantiles: [2e-04 1e-03 2e-03 6e-03 2e-01]
+GENERAL: OK 500, OKZ 0, Z3 0, TO 0, NG 0, NC 0, err 0
+------------- bonus/loki_tiny
+  * average duration: 0.004 s / 25000
+  * quantiles: [7e-05 3e-04 7e-04 1e-03 5e+00]
+GENERAL: OK 25000, OKZ 0, Z3 0, TO 0, NG 0, NC 0, err 0
+Got 40773 unique experiments, 41000 total
+40773 solved, 0 unsolved
+
+Unsolved:

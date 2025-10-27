@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use log::error;
-
 use crate::{
     expr::{Binop, Expr},
     symba::solve_linear,
@@ -11,6 +9,8 @@ struct DegVar {
     forwards: HashMap<(usize, usize), usize>,
     back: HashMap<usize, (usize, usize)>,
     id: usize, // The id of the next variable
+    t: usize,
+    d: usize,
 }
 
 impl DegVar {
@@ -19,6 +19,8 @@ impl DegVar {
             forwards: Default::default(),
             back: Default::default(),
             id,
+            t: id,
+            d: 0,
         }
     }
 
@@ -44,6 +46,8 @@ impl DegVar {
 }
 
 fn make_linear(e: &Expr, vars: &mut DegVar, deg: usize) -> Expr {
+    vars.d = vars.d.max(deg);
+
     let vec_map = |exprs: &Vec<Expr>, vars: &mut DegVar| {
         exprs
             .into_iter()
@@ -59,7 +63,11 @@ fn make_linear(e: &Expr, vars: &mut DegVar, deg: usize) -> Expr {
     };
 
     match e {
-        Expr::Var(v) => Expr::Var(vars.encode(*v, deg)),
+        Expr::Var(v) => {
+            // We start at 0
+            vars.t = vars.t.max(*v + 1);
+            Expr::Var(vars.encode(*v, deg))
+        }
         Expr::Const(_) => e.clone(),
 
         Expr::Not(expr) => !make_linear(&*expr, vars, deg),
@@ -164,18 +172,19 @@ fn make_polynomial(e: Expr, vars: &mut DegVar) -> Expr {
     }
 }
 
-pub fn solve_polynomial(e: &Expr) -> Expr {
+pub fn solve_polynomial(e: &Expr, n: u32) -> Expr {
     let mut vars = DegVar::new(0);
     let mut e = make_linear(e, &mut vars, 0);
 
-    error!("LINEAR: {}", e);
+    // error!("LINEAR: {}", e);
 
-    e = solve_linear(&e);
+    // TODO!
+    e = solve_linear(&e, n);
 
-    error!("LINEAR SOLVED: {}", e);
+    // error!("LINEAR SOLVED: {}", e);
 
     // Removes the "and"s
     e = make_polynomial(e, &mut vars);
 
-    e.arith_reduce()
+    e.arith_reduce().mod_simplify(n)
 }

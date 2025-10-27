@@ -5,7 +5,9 @@ use std::{
     u128, vec,
 };
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+use crate::expr;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Binop {
     pub left: Box<Expr>,
     pub right: Box<Expr>,
@@ -20,7 +22,7 @@ impl Binop {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Expr {
     Var(usize),
 
@@ -640,6 +642,7 @@ impl Expr {
     pub fn group_terms(self) -> Self {
         match self {
             Expr::Add(exprs) => {
+                let initial_len = exprs.len();
                 let mut map = HashMap::<Expr, usize>::new();
 
                 let mut add_expr = |e, c| {
@@ -665,10 +668,16 @@ impl Expr {
                         continue;
                     }
 
-                    out.push(((count as u128) * e).arith_reduce());
+                    out.push((count as u128) * e);
                 }
 
-                Expr::Add(out)
+                out.sort();
+
+                if initial_len > out.len() {
+                    Expr::Add(out).arith_reduce()
+                } else {
+                    Expr::Add(out)
+                }
             }
             _ => self,
         }
@@ -976,8 +985,14 @@ impl Expr {
 
                 match flat.len() {
                     0 => Expr::Const(c),
-                    1 => c * flat.into_iter().next().unwrap(),
-                    _ => c * Expr::Mul(flat),
+                    1 => (c * flat.into_iter().next().unwrap()).arith_reduce(),
+                    _ => {
+                        if c != 1 {
+                            (c * Expr::Mul(flat)).arith_reduce()
+                        } else {
+                            Expr::Mul(flat)
+                        }
+                    }
                 }
             }
 
@@ -1062,5 +1077,44 @@ impl Expr {
             Expr::Scale(v, e) => (v % 2u128.pow(n)) * *e,
             _ => e.mod_simplify(n),
         })
+    }
+
+    pub fn canonic(self) -> Self {
+        let vec_map = |exprs: Vec<Expr>| {
+            let mut r: Vec<Expr> = exprs.into_iter().map(|e| e.canonic()).collect();
+            r.sort();
+            r
+        };
+
+        let binop_map = |b: Binop| Binop::new(b.left.canonic(), b.right.canonic());
+
+        match self {
+            Expr::Var(_) | Expr::Const(_) => self,
+
+            Expr::Not(expr) => !expr.canonic(),
+            Expr::Neg(expr) => (-1i128 as u128) * expr.canonic(),
+            Expr::Scale(v, expr) => v * expr.canonic(),
+
+            Expr::And(exprs) => Expr::And(vec_map(exprs)),
+            Expr::Or(exprs) => Expr::Or(vec_map(exprs)),
+            Expr::Xor(exprs) => Expr::Xor(vec_map(exprs)),
+            Expr::Add(exprs) => Expr::Add(vec_map(exprs)),
+            Expr::Sub(_) => todo!(),
+            Expr::Mul(exprs) => Expr::Mul(vec_map(exprs)),
+
+            Expr::Shl(binop) => Expr::Shl(binop_map(binop)),
+            Expr::Shr(binop) => Expr::Shr(binop_map(binop)),
+            Expr::RshiftS(binop) => Expr::RshiftS(binop_map(binop)),
+            Expr::Le(binop) => Expr::Le(binop_map(binop)),
+            Expr::Lt(binop) => Expr::Lt(binop_map(binop)),
+            Expr::Ge(binop) => Expr::Ge(binop_map(binop)),
+            Expr::Gt(binop) => Expr::Gt(binop_map(binop)),
+            Expr::LeS(binop) => Expr::LeS(binop_map(binop)),
+            Expr::LtS(binop) => Expr::LtS(binop_map(binop)),
+            Expr::GeS(binop) => Expr::GeS(binop_map(binop)),
+            Expr::GtS(binop) => Expr::GtS(binop_map(binop)),
+            Expr::Ne(binop) => Expr::Ne(binop_map(binop)),
+            Expr::Eq(binop) => Expr::Eq(binop_map(binop)),
+        }
     }
 }
