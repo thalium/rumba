@@ -216,7 +216,7 @@ impl MBASolver {
 
         let e = self.restore_vars(e, &var_map);
 
-        debug!("Found solution to linear MBA: {}\n", e);
+        debug!("Found solution to linear MBA: {}", e);
 
         e
     }
@@ -225,22 +225,13 @@ impl MBASolver {
     fn poly_to_linear(&self, e: Expr, deg: usize) -> Expr {
         match e {
             Expr::Var(v) => Expr::Var(deg * self.t + v),
-            Expr::Mul(terms) => {
-                // // The sign correction -> see paper
-                // let s = if (self.degree - terms.len()) & 1 == 0 {
-                //     1
-                // } else {
-                //     u128::MAX
-                // };
-
-                Expr::And(
-                    terms
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, e)| self.poly_to_linear(e, deg + i))
-                        .collect(),
-                )
-            }
+            Expr::Mul(terms) => Expr::And(
+                terms
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, e)| self.poly_to_linear(e, deg + i))
+                    .collect(),
+            ),
             _ => e.map(|e| self.poly_to_linear(e, deg)),
         }
     }
@@ -287,7 +278,7 @@ impl MBASolver {
 
             Expr::Const(_) => {
                 // The sign correction -> see paper
-                let s = if self.degree & 1 == 1 { u128::MAX } else { 1 };
+                let s = if self.degree & 1 == 0 { u128::MAX } else { 1 };
                 s * e
             }
 
