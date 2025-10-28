@@ -5,5 +5,6 @@ edition = "2024"
 
 [dependencies]
 clap = "4.5.48"
+env_logger = "0.11.8"
 mbalib = { path = "../mbalib" }
 rand = "0.9.2"

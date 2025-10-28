@@ -5,8 +5,6 @@ use std::{
     u128, vec,
 };
 
-use crate::expr;
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Binop {
     pub left: Box<Expr>,
@@ -639,7 +637,7 @@ impl Expr {
         })
     }
 
-    pub fn group_terms(self) -> Self {
+    pub fn group_terms(self, mask: u128) -> Self {
         match self {
             Expr::Add(exprs) => {
                 let initial_len = exprs.len();
@@ -664,11 +662,11 @@ impl Expr {
                 let mut out = Vec::with_capacity(map.len());
 
                 for (e, count) in map {
-                    if count == 0 {
+                    if count as u128 & mask == 0 {
                         continue;
                     }
 
-                    out.push((count as u128) * e);
+                    out.push(((count as u128) & mask) * e);
                 }
 
                 out.sort();
@@ -684,11 +682,15 @@ impl Expr {
     }
 
     pub fn arith_reduce(self) -> Self {
+        self.arith_reduce_mod(u128::MAX)
+    }
+
+    pub fn arith_reduce_mod(self, mask: u128) -> Self {
         match self {
             Expr::Not(expr) => match *expr {
                 Expr::Not(x) => x.arith_reduce(),
 
-                Expr::Const(v) => Expr::Const(!v),
+                Expr::Const(v) => Expr::Const((!v) & mask),
 
                 Expr::And(exprs) => Expr::Or(
                     exprs
@@ -709,19 +711,25 @@ impl Expr {
 
             Expr::Neg(expr) => match *expr {
                 Expr::Neg(x) => x.arith_reduce(),
-                Expr::Const(v) => Expr::Const(-(v as i128) as u128),
-                _ => (-1i128 as u128) * expr.arith_reduce(),
+                Expr::Const(v) => Expr::Const((-(v as i128) as u128) & mask),
+                _ => u128::MAX * expr.arith_reduce(),
             },
 
-            Expr::Scale(0, _) => Expr::Const(0),
-            Expr::Scale(1, e) => e.arith_reduce(),
-            Expr::Scale(c1, e) => match e.arith_reduce() {
-                Expr::Const(c2) => Expr::Const(c1.wrapping_mul(c2)),
-                Expr::Scale(c2, e) => c1.wrapping_mul(c2) * *e,
-                Expr::Add(sum) => {
-                    Expr::Add(sum.into_iter().map(|e| c1 * e).collect()).arith_reduce()
-                }
-                other => c1 * other,
+            Expr::Scale(c, e) => match c & mask {
+                0 => Expr::Const(0),
+                1 => e.arith_reduce(),
+                _ => match e.arith_reduce() {
+                    Expr::Const(c2) => Expr::Const(c.wrapping_mul(c2) & mask),
+                    Expr::Scale(c2, e) => match c.wrapping_mul(c2) & mask {
+                        0 => Expr::Const(0),
+                        1 => *e,
+                        c => c * *e,
+                    },
+                    Expr::Add(sum) => {
+                        Expr::Add(sum.into_iter().map(|e| c * e).collect()).arith_reduce()
+                    }
+                    other => c * other,
+                },
             },
 
             Expr::And(exprs) => {
@@ -748,12 +756,12 @@ impl Expr {
                     collect(e, &mut c, &mut flat);
                 }
 
-                if c == 0 {
+                if (c & mask) == 0 {
                     return Expr::Const(0);
                 }
 
-                if c != u128::MAX {
-                    flat.push(Expr::Const(c));
+                if (c & mask) != u128::MAX {
+                    flat.push(Expr::Const(c & mask));
                 }
 
                 // If any child is XOR, distribute AND over XOR
@@ -804,8 +812,8 @@ impl Expr {
                     collect(e, &mut c, &mut flat);
                 }
 
-                if c != 0u128 {
-                    flat.push(Expr::Const(c));
+                if (c & mask) != 0u128 {
+                    flat.push(Expr::Const(c & mask));
                 }
 
                 // If any child is AND, distribute OR over AND
@@ -857,8 +865,8 @@ impl Expr {
                     collect(e, &mut c, &mut flat);
                 }
 
-                if c != 0 {
-                    flat.push(Expr::Const(c));
+                if (c & mask) != 0 {
+                    flat.push(Expr::Const(c & mask));
                 }
 
                 // Reduce duplicates (pairs cancel)
@@ -908,8 +916,8 @@ impl Expr {
                     collect(e, &mut c, &mut flat);
                 }
 
-                if c != 0 {
-                    flat.push(Expr::Const(c));
+                if (c & mask) != 0 {
+                    flat.push(Expr::Const(c & mask));
                 }
 
                 flat.sort();
@@ -917,7 +925,7 @@ impl Expr {
                 match flat.len() {
                     0 => Expr::Const(0),
                     1 => flat.into_iter().next().unwrap(),
-                    _ => Expr::Add(flat).group_terms(),
+                    _ => Expr::Add(flat).group_terms(mask),
                 }
             }
 
@@ -964,7 +972,7 @@ impl Expr {
                     collect(e, &mut c, &mut flat);
                 }
 
-                if c == 0 {
+                if (c & mask) == 0 {
                     return Expr::Const(0);
                 }
 
@@ -984,11 +992,17 @@ impl Expr {
                 flat.sort();
 
                 match flat.len() {
-                    0 => Expr::Const(c),
-                    1 => (c * flat.into_iter().next().unwrap()).arith_reduce(),
+                    0 => Expr::Const(c & mask),
+                    1 => {
+                        if (c & mask) != 1 {
+                            (c & mask) * flat.into_iter().next().unwrap()
+                        } else {
+                            flat.into_iter().next().unwrap()
+                        }
+                    }
                     _ => {
-                        if c != 1 {
-                            (c * Expr::Mul(flat)).arith_reduce()
+                        if (c & mask) != 1 {
+                            (c & mask) * Expr::Mul(flat)
                         } else {
                             Expr::Mul(flat)
                         }

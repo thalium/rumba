@@ -1,9 +1,11 @@
 use std::cmp::max;
 
 use clap::{Arg, Command};
-use mbalib::{nonpoly::solve_non_poly, parser::parse_expr};
+use mbalib::{parser::parse_expr, rumba::simplify_mba};
 
 fn main() {
+    env_logger::init();
+
     let matches = Command::new("text-tool")
         .version("0.1")
         .author("Jack Royer")
@@ -45,7 +47,7 @@ fn main() {
 
     match parse_expr(&expr) {
         Ok(e) => {
-            let sol = solve_non_poly(&e, bits);
+            let sol = simplify_mba(e.clone(), bits);
             println!("{}", sol.repr(bits, hex, false));
 
             if matches.get_flag("test") {

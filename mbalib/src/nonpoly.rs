@@ -1,4 +1,3 @@
-use log::error;
 use std::collections::HashMap;
 
 use crate::{expr::Expr, poly::solve_polynomial, symba::is_bitwise};

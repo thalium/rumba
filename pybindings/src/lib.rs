@@ -4,6 +4,7 @@ use mbalib::expr;
 use mbalib::nonpoly::solve_non_poly;
 use mbalib::parser::parse_expr;
 use mbalib::poly::solve_polynomial;
+use mbalib::rumba::simplify_mba;
 use mbalib::symba::solve_linear;
 use pyo3::exceptions;
 use pyo3::prelude::*;
@@ -72,21 +73,21 @@ impl Expr {
     /// Attempts to solve this expression, treating it as a linear MBA
     fn solve_linear(&mut self, n: u32) -> Self {
         Self {
-            inner: solve_linear(&self.inner, n),
+            inner: simplify_mba(self.inner.clone(), n),
         }
     }
 
     /// Attempts to solve this expression, treating it as a polynomial MBA
     fn solve_poly(&mut self, n: u32) -> Self {
         Self {
-            inner: solve_polynomial(&self.inner, n),
+            inner: simplify_mba(self.inner.clone(), n),
         }
     }
 
     /// Attempts to solve this expression, treating it as a non polynomial MBA
     fn solve_non_poly(&mut self, n: u32) -> Self {
         Self {
-            inner: solve_non_poly(&self.inner, n),
+            inner: simplify_mba(self.inner.clone(), n),
         }
     }
 

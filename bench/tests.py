@@ -8,6 +8,9 @@ import hashlib
 import time
 import numpy as np
 
+from tqdm import tqdm
+
+
 from pyrumba import Expr
 import random
 
@@ -49,7 +52,6 @@ def check_results(e1, e2):
     for _ in range(1000):
         vars = [random.randint(0, 10000) for _ in range(16)]
         if e1.eval(vars, 32) != e2.eval(vars, 32):
-            print(f"Mismatch for expressions: {e1}, {e2} and vars: {str(vars)}")
             return False
     return True
 
@@ -77,7 +79,7 @@ def process_dataset(
     cnt = 0
     timing = []
 
-    for line in f.readlines():
+    for line in tqdm(f.readlines()):
         lineno += 1
 
         # Allow to limit processing of dataset.
@@ -111,10 +113,6 @@ def process_dataset(
             exp = Experiment(e, gt, "%s:%d" % (ds.name, lineno), ds.bitCount)
             experiments[h] = exp
 
-        # Do check for linear MBA.
-
-        # Do check for linear groundtruth.
-
         # Run MBA simplifier.
         try:
             start = time.perf_counter()
@@ -127,6 +125,13 @@ def process_dataset(
         except (Exception, BaseException) as ex:
             err += 1
             check_print_error(ex, verbosity, 3, lineno, e)
+            continue
+
+        # Did we make a mistake ?
+        if not check_results(r, Expr(gt)):
+            err += 1
+            print(f"Verification failed for line {lineno}: {e} => {r} != {gt}")
+            check_print_error("Semantics mismatch", verbosity, 4, lineno, gt)
             continue
 
         # Simplify the ground truth in order to have some standard format for comparison.
@@ -146,12 +151,6 @@ def process_dataset(
             check_results(r, Expr(gt))
             exp.solved.add("np")
             ok += 1
-            continue
-
-        # Did we make a mistake ?
-        if not check_results(r, Expr(gt)):
-            err += 1
-            check_print_error("Semantics mismatch", verbosity, 4, lineno, gt)
             continue
 
         # Finally neither simplification nor verification were successful.

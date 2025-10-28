@@ -1,2 +1,6 @@
 [workspace]
+resolver = "3"
 members = ["mbalib", "pybindings", "wasm", "rumba"]
+
+[profile.dev]
+panic = "unwind"

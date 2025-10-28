@@ -1,4 +1,3 @@
-use log::error;
 use std::{collections::HashMap, usize};
 
 use crate::expr::Expr;
@@ -180,11 +179,11 @@ fn get_signature(e: &Expr) -> Signature {
     ]
 }
 
-/// Attempts to turn an MBA Expression into a boolean expresion
-fn make_bool_expr(e: &Expr) -> Option<Expr> {
-    let s = get_signature(e);
-    tt_to_expr2(&s)
-}
+// /// Attempts to turn an MBA Expression into a boolean expresion
+// fn make_bool_expr(e: &Expr) -> Option<Expr> {
+//     let s = get_signature(e);
+//     tt_to_expr2(&s)
+// }
 
 /// Simplifies an MBA
 fn make_mba_expr(e: &Expr) -> Expr {

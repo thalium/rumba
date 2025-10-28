@@ -13,8 +13,6 @@ serde = "1.0.226"
 console_log = "1.0.0"
 log = "0.4.28"
 
-[profile.dev]
-panic = "unwind"
 
 [lib]
 name = "wasm"
