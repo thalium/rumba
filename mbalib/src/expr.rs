@@ -760,7 +760,7 @@ impl Expr {
                     return Expr::Const(0);
                 }
 
-                if (c & mask) != u128::MAX {
+                if (c & mask) != mask {
                     flat.push(Expr::Const(c & mask));
                 }
 
@@ -782,7 +782,7 @@ impl Expr {
                 flat.dedup();
 
                 match flat.len() {
-                    0 => Expr::Const(u128::MAX),
+                    0 => Expr::Const(mask),
                     1 => flat[0].clone(),
                     _ => Expr::And(flat),
                 }

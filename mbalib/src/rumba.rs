@@ -56,6 +56,18 @@ fn sub_coeff(tt: &mut Vec<u128>, coeff: u128, index: usize, sublist: Vec<usize>)
     }
 }
 
+fn get_degree(e: &Expr) -> usize {
+    match e {
+        Expr::Scale(_, e) => get_degree(e),
+
+        Expr::Mul(terms) => terms.len(),
+
+        Expr::Const(_) => 0,
+
+        _ => 1,
+    }
+}
+
 struct MBASolver {
     /// The number of bits being considered
     n: u32,
@@ -236,6 +248,34 @@ impl MBASolver {
         }
     }
 
+    fn poly_sum_to_linear(&self, e: Expr) -> Vec<Vec<Expr>> {
+        let mut polynomials = vec![vec![]; self.degree + 1];
+
+        match e {
+            Expr::Add(terms) => {
+                for term in terms {
+                    let deg = get_degree(&term);
+                    polynomials[deg].push(if deg >= 2 {
+                        self.poly_to_linear(term, 0)
+                    } else {
+                        term
+                    });
+                }
+            }
+
+            _ => {
+                let deg = get_degree(&e);
+                polynomials[deg].push(if deg >= 2 {
+                    self.poly_to_linear(e, 0)
+                } else {
+                    e
+                });
+            }
+        };
+
+        polynomials
+    }
+
     /// Turns a linear MBA into a polynomial one using the inverse PCT
     fn linear_to_poly(&self, e: Expr) -> Expr {
         match &e {
@@ -296,9 +336,23 @@ impl MBASolver {
             return self.solve_linear(e);
         }
 
-        let e = self.poly_to_linear(e, 0);
-        let e: Expr = self.solve_linear(e);
-        let e = self.linear_to_poly(e).arith_reduce_mod(self.mask());
+        let polys = self.poly_sum_to_linear(e);
+
+        let mut terms = vec![];
+
+        for (i, poly) in polys.into_iter().enumerate() {
+            if poly.is_empty() {
+                continue;
+            }
+
+            match i {
+                0 => terms.push(Expr::Add(poly)),
+                1 => terms.push(self.solve_linear(Expr::Add(poly))),
+                _ => terms.push(self.linear_to_poly(self.solve_linear(Expr::Add(poly)))),
+            }
+        }
+
+        let e = Expr::Add(terms).arith_reduce_mod(self.mask());
 
         debug!("Found polynomial solution: {}", e);
 
