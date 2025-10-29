@@ -366,6 +366,8 @@ impl MBASolver {
 
     /// Hides a non linear element behind a variable
     fn to_var(&mut self, e: Expr) -> Expr {
+        debug!("{} is not linear and will be replaced by a variable", e);
+
         let e = match e {
             Expr::Const(_) => e,
             _ => simplify_mba_inner(e, self.n),
@@ -397,13 +399,29 @@ impl MBASolver {
 
         let s = self.calc_signature(&e, t);
 
-        let minus_one = (1u128 << self.degree) - 1;
-        let minus_two = (1u128 << self.degree) - 2;
+        let minus_one = self.mask();
+        let minus_two = self.mask() - 1;
 
         if s[0] == 0 {
-            s.iter().all(|&x| x == 0 || x == 1)
+            if s.iter().all(|&x| x == 0 || x == 1) {
+                debug!(
+                    "Signature is {:?} in [0, 1]. Will treat {} as a bitwise expression",
+                    s, e
+                );
+                true
+            } else {
+                false
+            }
         } else if s[0] == minus_one {
-            s.iter().all(|&x| x == minus_one || x == minus_two)
+            if s.iter().all(|&x| x == minus_one || x == minus_two) {
+                debug!(
+                    "Signature is {:?} in [-1, 2]. Will treat {} as a bitwise expression",
+                    s, e
+                );
+                true
+            } else {
+                false
+            }
         } else {
             false
         }
