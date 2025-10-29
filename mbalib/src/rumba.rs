@@ -237,13 +237,30 @@ impl MBASolver {
     fn poly_to_linear(&self, e: Expr, deg: usize) -> Expr {
         match e {
             Expr::Var(v) => Expr::Var(deg * self.t + v),
-            Expr::Mul(terms) => Expr::And(
-                terms
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, e)| self.poly_to_linear(e, deg + i))
-                    .collect(),
-            ),
+            Expr::Mul(terms) => {
+                // The sign correction -> see paper
+                let s = if (self.degree - terms.len()) & 1 == 0 {
+                    1
+                } else {
+                    u128::MAX
+                };
+
+                s * Expr::And(
+                    terms
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, e)| self.poly_to_linear(e, deg + i))
+                        .collect(),
+                )
+            }
+
+            Expr::Const(c) => {
+                // TODO: This shouldn't be done in multiplications, only constants in the addition
+                // The sign correction -> see paper
+                let s = if self.degree & 1 == 0 { u128::MAX } else { 1 };
+                Expr::Const(s.wrapping_mul(c))
+            }
+
             _ => e.map(|e| self.poly_to_linear(e, deg)),
         }
     }
@@ -336,23 +353,9 @@ impl MBASolver {
             return self.solve_linear(e);
         }
 
-        let polys = self.poly_sum_to_linear(e);
-
-        let mut terms = vec![];
-
-        for (i, poly) in polys.into_iter().enumerate() {
-            if poly.is_empty() {
-                continue;
-            }
-
-            match i {
-                0 => terms.push(Expr::Add(poly)),
-                1 => terms.push(self.solve_linear(Expr::Add(poly))),
-                _ => terms.push(self.linear_to_poly(self.solve_linear(Expr::Add(poly)))),
-            }
-        }
-
-        let e = Expr::Add(terms).arith_reduce_mod(self.mask());
+        let e = self.poly_to_linear(e, 0);
+        let e: Expr = self.solve_linear(e);
+        let e = self.linear_to_poly(e).arith_reduce_mod(self.mask());
 
         debug!("Found polynomial solution: {}", e);
 
