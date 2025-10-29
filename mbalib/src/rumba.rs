@@ -236,7 +236,8 @@ impl MBASolver {
     /// Turns a polynomial MBA to a linear one using PCT
     fn poly_to_linear(&self, e: Expr, deg: usize) -> Expr {
         match e {
-            Expr::Var(v) => Expr::Var(deg * self.t + v),
+            Expr::Var(v) => Expr::Var((deg - 1) * self.t + v),
+
             Expr::Mul(terms) => {
                 // The sign correction -> see paper
                 let s = if (self.degree - terms.len()) & 1 == 0 {
@@ -249,48 +250,24 @@ impl MBASolver {
                     terms
                         .into_iter()
                         .enumerate()
-                        .map(|(i, e)| self.poly_to_linear(e, deg + i))
+                        .map(|(i, e)| self.poly_to_linear(e, deg + i + 1))
                         .collect(),
                 )
             }
 
             Expr::Const(c) => {
-                // TODO: This shouldn't be done in multiplications, only constants in the addition
-                // The sign correction -> see paper
-                let s = if self.degree & 1 == 0 { u128::MAX } else { 1 };
-                Expr::Const(s.wrapping_mul(c))
+                // This shouldn't be done in multiplications, only constants in the addition
+                if deg != 0 {
+                    e
+                } else {
+                    // The sign correction -> see paper
+                    let s = if self.degree & 1 == 0 { u128::MAX } else { 1 };
+                    Expr::Const(s.wrapping_mul(c))
+                }
             }
 
             _ => e.map(|e| self.poly_to_linear(e, deg)),
         }
-    }
-
-    fn poly_sum_to_linear(&self, e: Expr) -> Vec<Vec<Expr>> {
-        let mut polynomials = vec![vec![]; self.degree + 1];
-
-        match e {
-            Expr::Add(terms) => {
-                for term in terms {
-                    let deg = get_degree(&term);
-                    polynomials[deg].push(if deg >= 2 {
-                        self.poly_to_linear(term, 0)
-                    } else {
-                        term
-                    });
-                }
-            }
-
-            _ => {
-                let deg = get_degree(&e);
-                polynomials[deg].push(if deg >= 2 {
-                    self.poly_to_linear(e, 0)
-                } else {
-                    e
-                });
-            }
-        };
-
-        polynomials
     }
 
     /// Turns a linear MBA into a polynomial one using the inverse PCT
