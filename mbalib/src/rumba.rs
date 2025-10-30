@@ -56,18 +56,6 @@ fn sub_coeff(tt: &mut Vec<u128>, coeff: u128, index: usize, sublist: Vec<usize>)
     }
 }
 
-fn get_degree(e: &Expr) -> usize {
-    match e {
-        Expr::Scale(_, e) => get_degree(e),
-
-        Expr::Mul(terms) => terms.len(),
-
-        Expr::Const(_) => 0,
-
-        _ => 1,
-    }
-}
-
 struct MBASolver {
     /// The number of bits being considered
     n: u32,
@@ -119,6 +107,7 @@ impl MBASolver {
         // This was a non linear MBA
         if self.non_linear_components.len() != 0 {
             let e = self.poly_to_nonpoly(p);
+            debug!("After adding non linear components, found: {}", e);
             e.arith_reduce_mod(self.mask())
         } else {
             p
@@ -346,25 +335,25 @@ impl MBASolver {
 
     /// Hides a non linear element behind a variable
     fn to_var(&mut self, e: Expr) -> Expr {
-        debug!("{} is not linear and will be replaced by a variable", e);
+        debug!("e={} is not linear and will be replaced by a variable", e);
 
         let e = match e {
             Expr::Const(_) => e,
-            _ => simplify_mba_inner(e, self.n),
+            _ => simplify_mba_inner(e, self.n).arith_reduce_mod(self.mask()),
         };
 
+        let note = (-e.clone() - Expr::Const(1)).arith_reduce_mod(self.mask());
+        debug!("!e would be {}", note);
+
         if let Some(v) = self.non_linear_components.get_by_right(&e) {
+            debug!("Found variable v{} for e", v);
             Expr::Var(*v)
+        } else if let Some(v) = self.non_linear_components.get_by_right(&note) {
+            debug!("Found variable v{} for !e", v);
+            !Expr::Var(*v)
         } else {
-            if let Expr::Const(c) = e {
-                if let Some(v) = self
-                    .non_linear_components
-                    .get_by_right(&Expr::Const((!c) & self.mask()))
-                {
-                    return !Expr::Var(*v);
-                }
-            }
             let v = self.t;
+            debug!("Creating variable v{} for e", v);
             self.t += 1;
             self.non_linear_components.insert(v, e);
             Expr::Var(v)
@@ -497,6 +486,22 @@ fn simplify_mba_inner(e: Expr, n: u32) -> Expr {
     solver.solve(e)
 }
 
+// I should probably add a flag for recursive simplification
 pub fn simplify_mba(e: Expr, n: u32) -> Expr {
-    simplify_mba_inner(e.arith_reduce_mod((1 << n) - 1), n)
+    let mask = (1 << n) - 1;
+    let mut e = e.arith_reduce_mod(mask);
+
+    let mut size = usize::MAX;
+    loop {
+        e = simplify_mba_inner(e, n);
+        let sz = e.size();
+
+        if size == sz {
+            break;
+        }
+
+        size = sz;
+    }
+
+    e
 }

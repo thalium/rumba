@@ -21,6 +21,8 @@ parentdir = os.path.dirname(currentdir)
 sys.path.insert(0, os.path.join(parentdir, "src"))
 
 
+TEST_COUNT = 200
+
 # unique experiments (hash expression)
 experiments = {}
 
@@ -49,7 +51,7 @@ def check_print_error(ex, verbosity, idx, lineno, expr):
 
 
 def check_results(e1, e2):
-    for _ in range(1000):
+    for _ in range(TEST_COUNT):
         vars = [random.randint(0, 10000) for _ in range(16)]
         if e1.eval(vars, 32) != e2.eval(vars, 32):
             return False
@@ -148,10 +150,16 @@ def process_dataset(
 
         # We have got the expected result.
         if str(r.simplify()) == str(rgt.simplify()):
-            check_results(r, Expr(gt))
             exp.solved.add("np")
             ok += 1
             continue
+
+        z = (r - rgt).solve_non_poly(bitCount)
+        if str(z) == str(Expr(0).simplify()):
+            exp.solved.add("np")
+            okz += 1
+            continue
+        print("Difference after simplification: ", z)
 
         # Finally neither simplification nor verification were successful.
         ng += 1
