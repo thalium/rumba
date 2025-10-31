@@ -59,52 +59,80 @@ fn sub_coeff(tt: &mut Vec<u128>, coeff: u128, index: usize, sublist: Vec<usize>)
     }
 }
 
-fn min_inf_norm_lambda(x: &Vec<u128>, y: &Vec<u128>, mask: u128) -> u128 {
-    assert_eq!(x.len(), y.len());
+fn get_signed(x: u128, n: u32) -> i128 {
+    let mask = (1u128 << n) - 1;
+    let value = x & mask;
+    ((value << (128 - n)) as i128) >> (128 - n) // arithmetic shift
+}
 
-    let abs = |x: u128| -> u128 {
-        let xm = x & mask;
-        min(xm, ((!xm).wrapping_add(1)) & mask)
-    };
+fn find_lambda_int(x: &Vec<u128>, y: &Vec<u128>, a: i128, b: i128, n: u32) -> Option<u128> {
+    let mut valid: Option<(Option<i128>, Option<i128>)> = None;
 
-    let m = x
-        .iter()
-        .zip(y)
-        .map(|(&xi, &yi)| abs(xi).wrapping_add(abs(yi)))
-        .max()
-        .unwrap();
+    for (&xi, &yi) in x.iter().zip(y.iter()) {
+        let xi = get_signed(xi, n);
+        let yi = get_signed(yi, n);
 
-    let mut l: i128 = -(m as i128);
-    let mut r: i128 = m as i128;
+        if yi == 0 {
+            if xi == a || xi == b {
+                continue;
+            } else {
+                return None;
+            }
+        }
 
-    let f = |lam: i128| -> u128 {
-        x.iter()
-            .zip(y)
-            .map(|(&xi, &yi)| {
-                let diff = xi.wrapping_sub((lam as u128).wrapping_mul(yi));
-                abs(diff)
-            })
-            .max()
-            .unwrap()
-    };
+        let mut vals = [None, None];
 
-    while r - l > 3 {
-        let m1 = l + (r - l) / 3;
-        let m2 = r - (r - l) / 3;
-        if f(m1) < f(m2) { r = m2 } else { l = m1 }
-    }
+        if (xi.wrapping_sub(a)) % yi == 0 {
+            vals[0] = Some((xi.wrapping_sub(a)) / yi);
+        }
 
-    let mut best_lambda = l;
-    let mut best_norm = f(l);
-    for lam in l..=r {
-        let norm = f(lam);
-        if norm < best_norm {
-            best_norm = norm;
-            best_lambda = lam
+        if (xi.wrapping_sub(b)) % yi == 0 {
+            vals[1] = Some((xi.wrapping_sub(b)) / yi);
+        }
+
+        match valid {
+            None => valid = Some((vals[0], vals[1])),
+            Some((va, vb)) => {
+                let mut new = (None, None);
+                for v in vals.iter().flatten() {
+                    if va == Some(*v) || vb == Some(*v) {
+                        if new.0.is_none() {
+                            new.0 = Some(*v);
+                        } else {
+                            new.1 = Some(*v);
+                        }
+                    }
+                }
+                valid = Some(new);
+            }
+        }
+
+        if let Some((None, None)) = valid {
+            debug!("OVERCONSTRAINED");
+            return None;
         }
     }
 
-    (best_lambda as u128) & mask
+    if let Some(valid) = valid {
+        let mask = (1 << n) - 1;
+
+        if let Some(v) = valid.0 {
+            if get_signed(x[0], n).wrapping_sub(v.wrapping_mul(get_signed(y[0], n))) == a {
+                return Some((v as u128) & mask);
+            }
+        }
+
+        if let Some(v) = valid.1 {
+            if get_signed(x[0], n).wrapping_sub(v.wrapping_mul(get_signed(y[0], n))) == a {
+                return Some((v as u128) & mask);
+            }
+        }
+
+        None
+    } else {
+        // the vector is null
+        Some(0)
+    }
 }
 
 struct MBASolver {
@@ -484,16 +512,15 @@ impl MBASolver {
         let see = self.calc_signature(&reduced_ee, t);
         debug!("Using zero signature {:?}", see);
 
-        let lambda = min_inf_norm_lambda(&se, &see, self.mask());
-
-        debug!("Found lambda = {}", lambda);
-        let s: Vec<u128> = se
-            .iter()
-            .zip(see)
-            .map(|(&xi, yi)| xi.wrapping_sub(lambda.wrapping_mul(yi)) & self.mask())
-            .collect();
-
-        if self.is_signature_bitwise(&s) {
+        if let Some(lambda) = find_lambda_int(&se, &see, 0, 1, self.n) {
+            debug!("Found lambda that creates a [0, 1] signature: {:?}", lambda);
+            Some(e - lambda * ee)
+        } else if let Some(lambda) = find_lambda_int(&se, &see, -1, -2, self.n) {
+            debug!(
+                "Found lambda that creates a [-1, -2] signature: {:?}",
+                lambda
+            );
+            debug!("Using zero signature {:?}", see);
             Some(e - lambda * ee)
         } else {
             None

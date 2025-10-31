@@ -400,7 +400,7 @@ impl Expr {
 
     /// Parenthesizes an expression if needed
     fn parenthesize(&self, parent: &Expr, s: String) -> String {
-        if parent.precedence() < self.precedence() {
+        if parent.precedence() <= self.precedence() {
             format!("({})", s)
         } else {
             s
