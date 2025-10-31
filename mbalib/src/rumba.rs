@@ -1,4 +1,7 @@
-use std::{cmp::max, usize};
+use std::{
+    cmp::{max, min},
+    u128, usize,
+};
 
 use crate::{bimap::BiMap, expr::Expr};
 
@@ -54,6 +57,54 @@ fn sub_coeff(tt: &mut Vec<u128>, coeff: u128, index: usize, sublist: Vec<usize>)
         }
         start += period;
     }
+}
+
+fn min_inf_norm_lambda(x: &Vec<u128>, y: &Vec<u128>, mask: u128) -> u128 {
+    assert_eq!(x.len(), y.len());
+
+    let abs = |x: u128| -> u128 {
+        let xm = x & mask;
+        min(xm, ((!xm).wrapping_add(1)) & mask)
+    };
+
+    let m = x
+        .iter()
+        .zip(y)
+        .map(|(&xi, &yi)| abs(xi).wrapping_add(abs(yi)))
+        .max()
+        .unwrap();
+
+    let mut l: i128 = -(m as i128);
+    let mut r: i128 = m as i128;
+
+    let f = |lam: i128| -> u128 {
+        x.iter()
+            .zip(y)
+            .map(|(&xi, &yi)| {
+                let diff = xi.wrapping_sub((lam as u128).wrapping_mul(yi));
+                abs(diff)
+            })
+            .max()
+            .unwrap()
+    };
+
+    while r - l > 3 {
+        let m1 = l + (r - l) / 3;
+        let m2 = r - (r - l) / 3;
+        if f(m1) < f(m2) { r = m2 } else { l = m1 }
+    }
+
+    let mut best_lambda = l;
+    let mut best_norm = f(l);
+    for lam in l..=r {
+        let norm = f(lam);
+        if norm < best_norm {
+            best_norm = norm;
+            best_lambda = lam
+        }
+    }
+
+    (best_lambda as u128) & mask
 }
 
 struct MBASolver {
@@ -360,39 +411,109 @@ impl MBASolver {
         }
     }
 
-    // A Linear MBA might "hide" a bitwise expression
-    fn is_linear_bitwise(&self, l: &Expr) -> bool {
-        let mut t = 0;
-        let mut var_map = BiMap::new();
-        let e = self.reduce_vars(l.clone(), &mut var_map, &mut t);
-
-        let s = self.calc_signature(&e, t);
-
+    fn is_signature_bitwise(&self, s: &Vec<u128>) -> bool {
         let minus_one = self.mask();
         let minus_two = self.mask() - 1;
 
         if s[0] == 0 {
             if s.iter().all(|&x| x == 0 || x == 1) {
-                debug!(
-                    "Signature is {:?} in [0, 1]. Will treat {} as a bitwise expression",
-                    s, e
-                );
+                debug!("Signature is {:?} in [0, 1].", s);
                 true
             } else {
                 false
             }
         } else if s[0] == minus_one {
             if s.iter().all(|&x| x == minus_one || x == minus_two) {
-                debug!(
-                    "Signature is {:?} in [-1, 2]. Will treat {} as a bitwise expression",
-                    s, e
-                );
+                debug!("Signature is {:?} in [-1, 2]", s);
                 true
             } else {
                 false
             }
         } else {
             false
+        }
+    }
+
+    // Read paper
+    fn variable_substitution(&self, e: Expr) -> Option<Expr> {
+        let mut vars = vec![];
+        let mut sub_vars = vec![];
+
+        for v in e.get_vars() {
+            if let Some(_) = self.non_linear_components.get_by_left(&v) {
+                sub_vars.push(v);
+            } else {
+                vars.push(v);
+            }
+        }
+
+        // TODO: allow 2 variable substitutions
+        if sub_vars.len() != 1 {
+            return None;
+        }
+
+        let sub_var = sub_vars[0];
+        let ee = self.non_linear_components.get_by_left(&sub_var).unwrap();
+
+        if !self.is_linear(&ee) {
+            return None;
+        }
+
+        debug!("While checking if {} is linear", e);
+        debug!("Proceding with advanced variable substitution");
+        debug!("Found substitution v{} = {}", sub_var, ee);
+
+        // This vector is null
+        let ee = Expr::Var(sub_var) - ee.clone();
+        debug!("Using zero expression {}", ee);
+
+        for v in ee.get_vars() {
+            if !vars.contains(&v) {
+                vars.push(v);
+            }
+        }
+
+        let mut var_map = BiMap::new();
+        let mut t = 0;
+
+        let reduced_e = self.reduce_vars(e.clone(), &mut var_map, &mut t);
+        let reduced_ee = self.reduce_vars(ee.clone(), &mut var_map, &mut t);
+
+        let se = self.calc_signature(&reduced_e, t);
+        debug!("Using signature {:?}", se);
+        let see = self.calc_signature(&reduced_ee, t);
+        debug!("Using zero signature {:?}", see);
+
+        let lambda = min_inf_norm_lambda(&se, &see, self.mask());
+
+        debug!("Found lambda = {}", lambda);
+        let s: Vec<u128> = se
+            .iter()
+            .zip(see)
+            .map(|(&xi, yi)| xi.wrapping_sub(lambda.wrapping_mul(yi)) & self.mask())
+            .collect();
+
+        if self.is_signature_bitwise(&s) {
+            Some(e - lambda * ee)
+        } else {
+            None
+        }
+    }
+
+    // A Linear MBA might "hide" a bitwise expression
+    fn is_linear_bitwise(&self, l: Expr) -> Option<Expr> {
+        let mut t = 0;
+        let mut var_map = BiMap::new();
+        let e = self.reduce_vars(l.clone(), &mut var_map, &mut t);
+
+        let s = self.calc_signature(&e, t);
+
+        if self.is_signature_bitwise(&s) {
+            debug!("Will treat {} as a bitwise expression", e);
+            Some(l)
+        } else {
+            // Attempt to "fix" the signature with a variable substitution
+            self.variable_substitution(l)
         }
     }
 
@@ -415,6 +536,10 @@ impl MBASolver {
 
             // A boolean expression is bitwise if all its sub expressions are bitwise
             Expr::Not(_) | Expr::And(_) | Expr::Or(_) | Expr::Xor(_) => {
+                // if only bitwise
+                // self
+                // if has negatives, try and fix the "biphased" problem
+                // worst case
                 e.map(|e| self.make_bitwise(e))
             }
 
@@ -422,7 +547,7 @@ impl MBASolver {
             Expr::Add(_) | Expr::Scale(_, _) => {
                 let previous = e.clone();
                 let l = e.map(|e| self.make_linear(e));
-                if self.is_linear_bitwise(&l) {
+                if let Some(l) = self.is_linear_bitwise(l) {
                     l
                 } else {
                     self.to_var(previous)
@@ -477,6 +602,40 @@ impl MBASolver {
         match e {
             Expr::Add(_) => e.map(|e| self.make_scaled_bitwise(e)),
             _ => self.make_scaled_bitwise(e),
+        }
+    }
+
+    fn is_linear(&self, e: &Expr) -> bool {
+        fn is_bitwise(e: &Expr, mask: u128) -> bool {
+            match e {
+                // -1 and 0 are bitwise
+                Expr::Const(c) => (c & mask == 0) || (c.wrapping_add(1) & mask == 0),
+
+                // Variables are bitwise
+                Expr::Var(_) => true,
+
+                // A boolean expression is bitwise if all its sub expressions are bitwise
+                Expr::Not(e) => is_bitwise(e, mask),
+
+                Expr::And(es) | Expr::Or(es) | Expr::Xor(es) => {
+                    es.iter().all(|e| is_bitwise(e, mask))
+                }
+
+                _ => false,
+            }
+        }
+
+        fn is_scaled_bitwise(e: &Expr, mask: u128) -> bool {
+            match e {
+                Expr::Const(_) => true,
+                Expr::Scale(_, e) => is_bitwise(e, mask),
+                _ => is_bitwise(e, mask),
+            }
+        }
+
+        match e {
+            Expr::Add(terms) => terms.iter().all(|e| is_scaled_bitwise(e, self.mask())),
+            _ => is_scaled_bitwise(e, self.mask()),
         }
     }
 }
