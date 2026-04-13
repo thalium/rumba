@@ -1,7 +1,10 @@
 [package]
 name = "rumba-core"
-version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core library for MBA (Mixed Boolean-Arithmetic) expression simplification"
 
 [dependencies]
 log = "0.4.28"

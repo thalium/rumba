@@ -1,10 +1,13 @@
 [package]
 name = "c"
-version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "C bindings for the rumba MBA simplification library"
 
 [dependencies]
-rumba-core = { path = "../../core" }
+rumba-core = { workspace = true }
 
 [lib]
 name = "rumbac"

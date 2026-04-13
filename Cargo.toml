@@ -2,5 +2,15 @@
 resolver = "3"
 members = ["core", "cli", "bindings/python", "bindings/wasm", "bindings/c"]
 
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+authors = ["Jack Royer"]
+repository = "https://github.com/thalium/rumba"
+
+[workspace.dependencies]
+rumba-core = { version = "0.1.0", path = "core" }
+
 [profile.dev]
 panic = "unwind"
