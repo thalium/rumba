@@ -1,0 +1,38 @@
+WHITESPACE = _{ " " | "\t" }
+EMPTY_LINE = _{ WHITESPACE* ~ NEWLINE }
+
+// Rumba lang
+COMMENT   = _{ "#" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
+
+program   = { SOI ~ (statement | COMMENT | EMPTY_LINE)* ~ EOI }
+
+statement = { unknown | assign}
+
+type      = @{"u" ~ ASCII_DIGIT+ }
+assign    = { type ~ var ~ "=" ~ expr ~ NEWLINE }
+unknown_vars = { var ~ ("," ~ var)* }
+unknown   = { type ~ var ~ "=" ~ "unknown" ~ "(" ~ unknown_vars? ~ ")" ~ NEWLINE }
+
+// Rumba expressions
+expr = { or }
+
+or  = { xor ~ ("|" ~ xor)* }
+xor = { and ~ ("^" ~ and)* }
+and = { add ~ ("&" ~ add)* }
+
+add    = { mul ~ (add_op ~ mul)* }
+add_op = { "+" | "-" }
+
+mul = { unary ~ ("*" ~ unary)* }
+
+unary    = { unary_op ~ unary | atom }
+unary_op = { "!" | "~" | "-" }
+
+atom = { number | var | "(" ~ expr ~ ")" }
+
+number = { hex_number | dec_number }
+
+dec_number = @{ ASCII_DIGIT+ }
+hex_number = @{ "0x" ~ ASCII_HEX_DIGIT+ }
+
+var = @{ "v" ~ ASCII_DIGIT+ }

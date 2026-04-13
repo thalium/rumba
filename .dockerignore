@@ -1,0 +1,7 @@
+.venv12/
+.venv/
+.vscode/
+build/
+target/
+
+*.csv

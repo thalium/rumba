@@ -1,0 +1,16 @@
+[package]
+name = "pyrumba"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pyo3 = { version = "0.26.0", features = ["extension-module"] }
+rumba-core = { path = "../../core" }
+
+[lib]
+name = "pyrumba"
+crate-type = ["cdylib"]
+
+[features]
+jit = ["rumba-core/jit"]
+parse = ["rumba-core/parse"]

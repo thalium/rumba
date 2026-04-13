@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = ["core", "cli", "bindings/python", "bindings/wasm", "bindings/c"]
+
+[profile.dev]
+panic = "unwind"

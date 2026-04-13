@@ -1,0 +1,15 @@
+[package]
+name = "c"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rumba-core = { path = "../../core" }
+
+[lib]
+name = "rumbac"
+crate-type = ["cdylib"]
+
+[features]
+jit = ["rumba-core/jit"]
+parse = ["rumba-core/parse"]

@@ -1,0 +1,7 @@
+/target
+.venv
+.venv12
+build
+*.csv
+out
+out.txt
