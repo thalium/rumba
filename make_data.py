@@ -20,6 +20,7 @@ directory = Path("./core/tests/datasets")
 for path in directory.iterdir():
     if not path.is_file():
         continue
+    if str(path).endswith(".gitignore"): continue
 
     print(f"\n{path}")
 
