@@ -7,10 +7,13 @@ from pyrumba import Expr
 
 results_rumba = []
 
-directory = Path("./core/tests/datasets")
+directory = Path("./third_party/dataset")
 
 for path in directory.iterdir():
     if not path.is_file():
+        continue
+
+    if str(path).endswith("LICENSE.md") or str(path).endswith(".gitignore"):
         continue
 
     print(f"\n{path}")

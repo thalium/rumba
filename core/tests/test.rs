@@ -176,7 +176,10 @@ fn run_csv_tests(filename: &'static str, csv: &str) -> Vec<ExperimentResult> {
 
 macro_rules! run_on_dataset {
     ($filename: literal) => {
-        run_csv_tests($filename, include_str!(concat!("./datasets/", $filename)))
+        run_csv_tests(
+            $filename,
+            include_str!(concat!("../../third_party/dataset/", $filename)),
+        )
     };
 }
 
