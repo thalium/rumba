@@ -172,6 +172,33 @@ impl Expr {
         }
     }
 
+    /// The common scalar factor of a linear term: `c` for `Scale(c, _)`, and the
+    /// shared `c` for an `Add` whose terms are all `Scale(c, _)` (a bare term
+    /// counts as `c = 1`); `1` otherwise.
+    ///
+    /// `reduce` distributes a scalar over a sum, so `2·(x + y)` is stored as
+    /// `2·x + 2·y`; this recovers the `2` that is no longer syntactically
+    /// present, letting callers see `x + y`, `2·x + 2·y` and `-x - y` as scalar
+    /// multiples of the same core.
+    pub fn get_factor(&self, mask: u64) -> u64 {
+        let term_factor = |t: &Expr| match t {
+            Expr::Scale(c, _) => c.get(mask),
+            _ => 1,
+        };
+        match self {
+            Expr::Scale(c, _) => c.get(mask),
+            Expr::Add(terms) => {
+                let f = term_factor(&terms[0]);
+                if terms.iter().all(|t| term_factor(t) == f) {
+                    f
+                } else {
+                    1
+                }
+            }
+            _ => 1,
+        }
+    }
+
     /// Counts the number of nodes in the expression
     pub fn size(&self) -> usize {
         let children_size = match self {
