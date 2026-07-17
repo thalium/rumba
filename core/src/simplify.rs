@@ -189,6 +189,10 @@ impl<'a> MBASolver<'a> {
         // TODO: Remove this only needs to be done once
         let e = e.reduce(self.mask);
 
+        // Non-polynomial stage: structural pattern rewrites on the canonical
+        // expression, before it is lifted to a polynomial.
+        let e = crate::patterns::apply_patterns(e, self.mask);
+
         let p = self.make_polynomial(e);
         let p = self.solve_polynomial(p);
 
