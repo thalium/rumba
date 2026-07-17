@@ -167,8 +167,89 @@ impl Pattern for LowBitAnnihilator {
     }
 }
 
+/// `(X & -X) & (m·X - 1) = X & -X` for any expression `X` and any even `m`.
+///
+/// `X & -X` isolates the single lowest set bit of `X`, at position `p`. As in
+/// [`LowBitAnnihilator`], an even multiple `m·X` is zero across bits `0..=p`, so
+/// `m·X - 1` borrows all the way up and is *one* at bit `p`. Conjoining bit `p`
+/// with something that is set at bit `p` leaves it unchanged, so the `m·X - 1`
+/// term is redundant and can be dropped.
+///
+/// Writing `X = a·C`, the isolating pair appears as two children with core `C`
+/// and coefficients `a` and `-a`, while the redundant term is the reduced form
+/// of `m·X - 1`, i.e. `Add([Const(-1), Scale(m, C)])`, with `m` an even multiple
+/// of `a` (`trailing_zeros(m) > trailing_zeros(a)`).
+struct LowBitRedundantMask;
+
+impl Pattern for LowBitRedundantMask {
+    fn tags(&self) -> &'static [Tag] {
+        &[Tag::And]
+    }
+
+    fn apply(&self, e: &Expr, mask: u64) -> Option<Expr> {
+        let Expr::And(children) = e else {
+            return None;
+        };
+
+        // A match needs `X`, `-X` and the `m·X - 1` conjunct.
+        if children.len() < 3 {
+            return None;
+        }
+
+        for (idx, cand) in children.iter().enumerate() {
+            // The redundant conjunct is the reduced `m·X - 1`: an `Add` of a
+            // `-1` constant and a single even multiple of `X`.
+            let Expr::Add(terms) = cand else {
+                continue;
+            };
+            if terms.len() != 2 {
+                continue;
+            }
+            let mut neg_one = false;
+            let mut mult: Option<(u64, &Expr)> = None;
+            for t in terms {
+                match t {
+                    Expr::Const(c) if c.get(mask) == mask => neg_one = true,
+                    _ => mult = Some(split(t, mask)),
+                }
+            }
+            let (Some((m, core)), true) = (mult, neg_one) else {
+                continue;
+            };
+
+            // `X & -X` must be isolated by a sibling pair `a·C` and `-a·C`, with
+            // `m` an even multiple of `a`.
+            for a_child in children {
+                let (a, a_core) = split(a_child, mask);
+                if a_core != core || m.trailing_zeros() <= a.trailing_zeros() {
+                    continue;
+                }
+                let neg = a.wrapping_neg() & mask; // -a mod 2ⁿ
+                let has_neg = children.iter().any(|o| {
+                    let (b, b_core) = split(o, mask);
+                    b_core == core && b == neg
+                });
+                if !has_neg {
+                    continue;
+                }
+
+                // Drop the redundant conjunct; the rest is already canonical.
+                let mut kept = children.clone();
+                kept.remove(idx);
+                return Some(if kept.len() == 1 {
+                    kept.pop().unwrap()
+                } else {
+                    Expr::And(kept)
+                });
+            }
+        }
+
+        None
+    }
+}
+
 /// The registered patterns, tried in order at each node.
-static PATTERNS: &[&dyn Pattern] = &[&LowBitAnnihilator];
+static PATTERNS: &[&dyn Pattern] = &[&LowBitAnnihilator, &LowBitRedundantMask];
 
 /// Applies the registered patterns to `e`, walking bottom-up.
 pub fn apply_patterns(e: Expr, mask: u64) -> Expr {
@@ -280,6 +361,64 @@ mod tests {
             assert!(
                 e.sem_equal(&Expr::zero(), mask, 500).is_ok(),
                 "m={m} not semantically zero"
+            );
+        }
+    }
+
+    /// `(X & -X) & (m·X - 1)` reduced, then run through the pattern pass.
+    fn redundant_mask(x: Expr, m: u64) -> Expr {
+        let mask = make_mask(N);
+        let e = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce(mask);
+        apply_patterns(e, mask)
+    }
+
+    #[test]
+    fn mask_reduces_to_low_bit() {
+        let mask = make_mask(N);
+        let expected = (var(0) & (-var(0))).reduce(mask);
+        for m in [2u64, 4, 6, 8, 10, 1 << 20] {
+            assert_eq!(redundant_mask(var(0), m), expected, "m={m}");
+        }
+    }
+
+    #[test]
+    fn mask_fires_within_larger_and() {
+        let mask = make_mask(N);
+        let x = var(0);
+        let e = (var(1) & x.clone() & (-x.clone()) & (6u64 * x.clone() - Expr::make_const(1)) & var(2))
+            .reduce(mask);
+        let expected = (var(1) & x.clone() & (-x.clone()) & var(2)).reduce(mask);
+        assert_eq!(apply_patterns(e, mask), expected);
+    }
+
+    #[test]
+    fn mask_ignores_odd_multiple() {
+        // `3·X - 1` is not zero across the low bits: identity does not hold.
+        let mask = make_mask(N);
+        let x = var(0);
+        let e = (x.clone() & (-x.clone()) & (3u64 * x - Expr::make_const(1))).reduce(mask);
+        let expected = (var(0) & (-var(0))).reduce(mask);
+        assert_ne!(apply_patterns(e, mask), expected);
+    }
+
+    #[test]
+    fn mask_ignores_missing_negation() {
+        let mask = make_mask(N);
+        let x = var(0);
+        let e = (x.clone() & (2u64 * x - Expr::make_const(1))).reduce(mask);
+        assert_eq!(apply_patterns(e.clone(), mask), e);
+    }
+
+    #[test]
+    fn mask_is_semantically_equivalent() {
+        let mask = make_mask(N);
+        for m in [2u64, 4, 6, 8, 10, 1 << 20] {
+            let x = var(0);
+            let before = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce(mask);
+            let after = apply_patterns(before.clone(), mask);
+            assert!(
+                before.sem_equal(&after, mask, 500).is_ok(),
+                "m={m} rewrite changed semantics"
             );
         }
     }
