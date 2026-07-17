@@ -885,7 +885,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         fn is_bitwise(e: &Expr, mask: u64) -> bool {
             match e {
                 // -1 and 0 are bitwise
-                Expr::Const(c) => (c.get(mask) == 0) || (c.get(mask) & mask == 0),
+                Expr::Const(c) => (c.get(mask) == 0) || (c.get(mask) == mask),
 
                 // Variables are bitwise
                 Expr::Var(_) => true,
