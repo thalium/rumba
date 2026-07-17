@@ -31,6 +31,9 @@ struct ExperimentResult {
 
     /// Simplification status
     status: Status,
+
+    /// For NG results, a human-readable dump of the failing case
+    ng: Option<String>,
 }
 
 /// An MBA to simplify with the expected ground truth
@@ -89,6 +92,7 @@ impl Experiment {
         };
 
         let mut status = Status::NG;
+        let mut ng = None;
 
         if simplified_mba == simplified_gt {
             status = Status::Ok;
@@ -97,10 +101,17 @@ impl Experiment {
         {
             status = Status::OkZ;
         } else {
-            // println!("Solution: {}\n GT: {}\n\n", simplified_mba, self.gt);
+            ng = Some(format!(
+                "{}:{}\n  mba:      {}\n  gt:       {}\n  produced: {}\n",
+                self.filename, self.line_nb, self.mba, self.gt, simplified_mba
+            ));
         }
 
-        ExperimentResult { elapsed, status }
+        ExperimentResult {
+            elapsed,
+            status,
+            ng,
+        }
     }
 }
 
@@ -155,6 +166,26 @@ fn count_types(results: &Vec<ExperimentResult>) -> (usize, usize, usize) {
     (oks, okzs, ngs)
 }
 
+/// Writes the failing (NG) cases of a dataset to `ng/<dataset>.txt` at the repo
+/// root, so they can be inspected after a run. The file is always (re)written,
+/// and removed when a dataset has no failures.
+fn write_ng_report(filename: &str, results: &[ExperimentResult]) {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("ng");
+    let path = dir.join(format!("{filename}.txt"));
+
+    let report: String = results.iter().filter_map(|r| r.ng.as_deref()).collect();
+
+    if report.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+
+    std::fs::create_dir_all(&dir).expect("failed to create ng report directory");
+    std::fs::write(&path, report).expect("failed to write ng report");
+}
+
 /// Runs experiments on a file and prints performance statistics
 fn run_csv_tests(filename: &'static str, csv: &str) -> Vec<ExperimentResult> {
     let mut results: Vec<ExperimentResult> = vec![];
@@ -170,6 +201,8 @@ fn run_csv_tests(filename: &'static str, csv: &str) -> Vec<ExperimentResult> {
 
     let (q0, q1, q2, q3, q4) = quartiles(&results);
     let (oks, okzs, ngs) = count_types(&results);
+
+    write_ng_report(filename, &results);
 
     println!(
         "RESULTS \"{}\" (count: {}):\n\t[{}, {}, {}, {}, {}]\n\tOK: {}\tOKZ: {}\tNG: {}\n",

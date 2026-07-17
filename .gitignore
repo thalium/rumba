@@ -4,4 +4,4 @@
 build
 *.csv
 out
-out.txt
+out.txt/ng

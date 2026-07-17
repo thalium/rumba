@@ -1,5 +1,6 @@
 mod bimap;
 pub mod expr;
+pub mod patterns;
 pub mod reduce;
 pub mod simplify;
 pub mod varint;
