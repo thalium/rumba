@@ -12,6 +12,7 @@
 //! iteration.
 
 use crate::expr::Expr;
+use crate::varint::VarInt;
 
 /// A lightweight, `const`-constructible discriminant used to index patterns by
 /// the expression variant they care about.
@@ -55,41 +56,56 @@ pub trait Pattern: Sync {
     fn apply(&self, e: &Expr, mask: u64) -> Option<Expr>;
 }
 
-/// Splits a (reduced) expression into its scalar coefficient and core.
+/// Splits a (reduced) term into `(factor, core)` such that `term == factor·core`
+/// (mod 2ⁿ), seeing through `reduce`'s distribution of a scalar over a sum.
 ///
-/// `reduce` guarantees no nested `Scale(Scale(..))`, so a single strip is
-/// enough. A bare (non-`Scale`) expression has an implicit coefficient of 1.
-fn split(e: &Expr, mask: u64) -> (u64, &Expr) {
-    match e {
-        Expr::Scale(c, inner) => (c.get(mask), inner.as_ref()),
-        _ => (1, e),
+/// For `Scale(c, X)` this is `(c, X)`. For a uniformly-scaled sum such as
+/// `2·x + 2·y` (the reduced form of `2·(x + y)`) it is `(2, x + y)`; the factor
+/// comes from [`Expr::get_factor`] and the core is the term with that factor
+/// divided out. A bare expression is `(1, itself)`. `reduce` guarantees no
+/// nested `Scale(Scale(..))`, so a single strip is enough.
+fn split(e: &Expr, mask: u64) -> (u64, Expr) {
+    let f = e.get_factor(mask);
+    if f == 1 {
+        return (1, e.clone());
     }
+    let strip = |t: &Expr| match t {
+        Expr::Scale(_, inner) => (**inner).clone(),
+        other => other.clone(),
+    };
+    let core = match e {
+        Expr::Add(terms) => Expr::Add(terms.iter().map(strip).collect()),
+        other => strip(other),
+    };
+    (f, core)
 }
 
 /// Recognizes the reduced form of a low-bit mask `m·X - 1`.
 ///
-/// After `reduce`, `m·X - 1` is `Add([Const(-1), Scale(m, C)])`: a `-1` constant
-/// (`mask`, i.e. all ones) plus a single scaled core. Returns `(m, C)` — the
-/// even-multiple coefficient and the core `C` (`X`'s core) — on a match.
-fn as_low_bit_mask(e: &Expr, mask: u64) -> Option<(u64, &Expr)> {
+/// After `reduce`, `m·X - 1` is an `Add` of a `-1` constant (`mask`, i.e. all
+/// ones) and the terms of `m·X`. The latter may be a single `Scale(m, C)` or,
+/// when `X` is a sum, a distributed group like `m·x + m·y`. Returns `(m, C)` —
+/// the even-multiple coefficient and `X`'s core — via [`split`].
+fn as_low_bit_mask(e: &Expr, mask: u64) -> Option<(u64, Expr)> {
     let Expr::Add(terms) = e else {
         return None;
     };
-    if terms.len() != 2 {
-        return None;
-    }
     let mut neg_one = false;
-    let mut mult: Option<(u64, &Expr)> = None;
+    let mut rest: Vec<Expr> = Vec::with_capacity(terms.len());
     for t in terms {
         match t {
             Expr::Const(c) if c.get(mask) == mask => neg_one = true,
-            _ => mult = Some(split(t, mask)),
+            _ => rest.push(t.clone()),
         }
     }
-    match (mult, neg_one) {
-        (Some(m), true) => Some(m),
-        _ => None,
+    if !neg_one || rest.is_empty() {
+        return None;
     }
+    let m_x = match rest.len() {
+        1 => rest.pop().unwrap(),
+        _ => Expr::Add(rest),
+    };
+    Some(split(&m_x, mask))
 }
 
 /// `X & (-X) & (m·X) = 0` for any expression `X` and any even `m`.
@@ -112,80 +128,53 @@ impl Pattern for LowBitAnnihilator {
         let Expr::And(children) = e else {
             return None;
         };
-
-        // Gate: a match needs the bare `X`, `-X` and `m·X`, and the latter two
-        // are always `Scale`s. Bail cheaply otherwise (no allocation).
         if children.len() < 3 {
             return None;
         }
-        if children
-            .iter()
-            .filter(|c| matches!(c, Expr::Scale(_, _)))
-            .count()
-            < 2
-        {
-            return None;
-        }
 
-        // The candidate cores are the inners of the `Scale` children: `-X` and
-        // `m·X` always appear scaled, so every real match's core is found here.
-        for cand in children {
-            let Expr::Scale(_, core) = cand else {
-                continue;
-            };
-            let core = core.as_ref();
+        // Normalize each conjunct to `(factor, core)` so that `a·C`, `-a·C` and
+        // `m·C` are recognized even when `reduce` has distributed the scalar
+        // over a sum (e.g. `2·(x+y)` stored as `2·x + 2·y`).
+        let norm: Vec<(u64, Expr)> = children.iter().map(|c| split(c, mask)).collect();
 
-            // Collect the coefficients of every term sharing this core.
-            //
-            // A bare `X` whose core is itself an `And` is flattened into the
-            // parent by `reduce` (its conjuncts become siblings), so it has no
-            // single child. When all of its conjuncts are present as siblings,
-            // the coefficient-1 term is nonetheless available.
-            let bare_present = match core {
-                Expr::And(elems) => elems.iter().all(|el| children.contains(el)),
-                _ => children.contains(core),
-            };
+        for (a, core) in &norm {
+            let a = *a;
 
-            for a_child in children {
-                let (a, a_core) = split(a_child, mask);
-                if a_core != core {
-                    continue;
-                }
-                // `a` is the coefficient of the candidate `X`. Skip the implicit
-                // coefficient-1 term unless a bare `X` is actually present.
-                if a == 1 && !bare_present && !matches!(a_child, Expr::Scale(_, _)) {
-                    continue;
-                }
-
-                let neg = a.wrapping_neg() & mask; // -a mod 2ⁿ
-                let tz_a = a.trailing_zeros();
-
-                let mut has_neg = false;
-                let mut has_even_multiple = false;
-
-                let mut visit = |b: u64| {
-                    if b == neg {
-                        has_neg = true;
-                    }
-                    // `b` is an even multiple of `a` (mod 2ⁿ).
-                    if b.trailing_zeros() > tz_a {
-                        has_even_multiple = true;
-                    }
+            // Is a coefficient-1 term for this core available? Either directly,
+            // or — when `X`'s core is an `And` — because `reduce` flattened the
+            // bare `X` into the parent, making its conjuncts siblings.
+            let bare_present = norm.iter().any(|(f, c)| *f == 1 && c == core)
+                || match core {
+                    Expr::And(elems) => elems.iter().all(|el| children.contains(el)),
+                    _ => false,
                 };
 
-                for other in children {
-                    let (b, b_core) = split(other, mask);
-                    if b_core == core {
-                        visit(b);
-                    }
-                }
-                if bare_present {
-                    visit(1);
-                }
+            let neg = a.wrapping_neg() & mask; // -a mod 2ⁿ
+            let tz_a = a.trailing_zeros();
 
-                if has_neg && has_even_multiple {
-                    return Some(Expr::zero());
+            let mut has_neg = false;
+            let mut has_even_multiple = false;
+            let mut visit = |b: u64| {
+                if b == neg {
+                    has_neg = true;
                 }
+                // `b` is an even multiple of `a` (mod 2ⁿ).
+                if b.trailing_zeros() > tz_a {
+                    has_even_multiple = true;
+                }
+            };
+
+            for (b, b_core) in &norm {
+                if b_core == core {
+                    visit(*b);
+                }
+            }
+            if bare_present {
+                visit(1);
+            }
+
+            if has_neg && has_even_multiple {
+                return Some(Expr::zero());
             }
         }
 
@@ -222,6 +211,8 @@ impl Pattern for LowBitRedundantMask {
             return None;
         }
 
+        let norm: Vec<(u64, Expr)> = children.iter().map(|c| split(c, mask)).collect();
+
         for (idx, cand) in children.iter().enumerate() {
             // The redundant conjunct is the reduced `m·X - 1`.
             let Some((m, core)) = as_low_bit_mask(cand, mask) else {
@@ -230,29 +221,25 @@ impl Pattern for LowBitRedundantMask {
 
             // `X & -X` must be isolated by a sibling pair `a·C` and `-a·C`, with
             // `m` an even multiple of `a`.
-            for a_child in children {
-                let (a, a_core) = split(a_child, mask);
-                if a_core != core || m.trailing_zeros() <= a.trailing_zeros() {
-                    continue;
-                }
-                let neg = a.wrapping_neg() & mask; // -a mod 2ⁿ
-                let has_neg = children.iter().any(|o| {
-                    let (b, b_core) = split(o, mask);
-                    b_core == core && b == neg
-                });
-                if !has_neg {
-                    continue;
-                }
-
-                // Drop the redundant conjunct; the rest is already canonical.
-                let mut kept = children.clone();
-                kept.remove(idx);
-                return Some(if kept.len() == 1 {
-                    kept.pop().unwrap()
-                } else {
-                    Expr::And(kept)
-                });
+            let isolated = norm.iter().any(|(a, a_core)| {
+                *a_core == core
+                    && m.trailing_zeros() > a.trailing_zeros()
+                    && norm
+                        .iter()
+                        .any(|(b, b_core)| *b_core == core && *b == a.wrapping_neg() & mask)
+            });
+            if !isolated {
+                continue;
             }
+
+            // Drop the redundant conjunct; the rest is already canonical.
+            let mut kept = children.clone();
+            kept.remove(idx);
+            return Some(if kept.len() == 1 {
+                kept.pop().unwrap()
+            } else {
+                Expr::And(kept)
+            });
         }
 
         None
@@ -278,7 +265,7 @@ impl LowBitMaskSplit {
     /// Splits `X & (m·X - 1)`: returns `(a, a_t, b, C)` for a term `a·(t & M)`
     /// where `t = a_t·C`, `M = m·X - 1` carries even multiple `b` over the same
     /// core `C`, and `b` is an even multiple of `a_t`.
-    fn split_masked<'a>(term: &'a Expr, mask: u64) -> Option<(u64, u64, u64, &'a Expr)> {
+    fn split_masked(term: &Expr, mask: u64) -> Option<(u64, u64, u64, Expr)> {
         let (a, core) = split(term, mask);
         let Expr::And(conj) = core else {
             return None;
@@ -333,19 +320,18 @@ impl Pattern for LowBitMaskSplit {
                 }
 
                 // Replace the pair with the single term `a·m·X = a·b·C`.
-                let coeff = crate::varint::VarInt::from(a1) * crate::varint::VarInt::from(b1);
-                let collapsed = Expr::scale(coeff.mask(mask), core1.clone());
+                let coeff = (VarInt::from(a1) * VarInt::from(b1)).mask(mask);
+                let collapsed = Expr::scale(coeff, core1);
 
-                let mut kept: Vec<Expr> = terms
+                let kept: Vec<Expr> = terms
                     .iter()
                     .enumerate()
                     .filter(|(k, _)| *k != i && *k != j)
                     .map(|(_, t)| t.clone())
+                    .chain(std::iter::once(collapsed))
                     .collect();
-                if kept.is_empty() {
-                    return Some(collapsed);
-                }
-                kept.push(collapsed);
+                // `collapsed` may be a scaled sum, and may combine with a kept
+                // term, so re-canonicalize.
                 return Some(Expr::Add(kept).reduce(mask));
             }
         }
