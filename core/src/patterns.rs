@@ -66,6 +66,32 @@ fn split(e: &Expr, mask: u64) -> (u64, &Expr) {
     }
 }
 
+/// Recognizes the reduced form of a low-bit mask `m·X - 1`.
+///
+/// After `reduce`, `m·X - 1` is `Add([Const(-1), Scale(m, C)])`: a `-1` constant
+/// (`mask`, i.e. all ones) plus a single scaled core. Returns `(m, C)` — the
+/// even-multiple coefficient and the core `C` (`X`'s core) — on a match.
+fn as_low_bit_mask(e: &Expr, mask: u64) -> Option<(u64, &Expr)> {
+    let Expr::Add(terms) = e else {
+        return None;
+    };
+    if terms.len() != 2 {
+        return None;
+    }
+    let mut neg_one = false;
+    let mut mult: Option<(u64, &Expr)> = None;
+    for t in terms {
+        match t {
+            Expr::Const(c) if c.get(mask) == mask => neg_one = true,
+            _ => mult = Some(split(t, mask)),
+        }
+    }
+    match (mult, neg_one) {
+        (Some(m), true) => Some(m),
+        _ => None,
+    }
+}
+
 /// `X & (-X) & (m·X) = 0` for any expression `X` and any even `m`.
 ///
 /// `X & -X` isolates the single lowest set bit of `X`, at position `p`. Bit `p`
@@ -197,23 +223,8 @@ impl Pattern for LowBitRedundantMask {
         }
 
         for (idx, cand) in children.iter().enumerate() {
-            // The redundant conjunct is the reduced `m·X - 1`: an `Add` of a
-            // `-1` constant and a single even multiple of `X`.
-            let Expr::Add(terms) = cand else {
-                continue;
-            };
-            if terms.len() != 2 {
-                continue;
-            }
-            let mut neg_one = false;
-            let mut mult: Option<(u64, &Expr)> = None;
-            for t in terms {
-                match t {
-                    Expr::Const(c) if c.get(mask) == mask => neg_one = true,
-                    _ => mult = Some(split(t, mask)),
-                }
-            }
-            let (Some((m, core)), true) = (mult, neg_one) else {
+            // The redundant conjunct is the reduced `m·X - 1`.
+            let Some((m, core)) = as_low_bit_mask(cand, mask) else {
                 continue;
             };
 
@@ -248,8 +259,107 @@ impl Pattern for LowBitRedundantMask {
     }
 }
 
+/// `a·(X & M) + a·((-X) & M) = a·m·X`, where `M = m·X - 1` and `m` is even.
+///
+/// Masking with `M = m·X - 1` splits `X` at its low bits: for even `m`, `m·X` is
+/// zero across bits `0..=p` (`p` = position of `X`'s lowest set bit), so `M` is
+/// all-ones there and `-1` (all-ones) above. `X & M` keeps `X`'s value below the
+/// split and drops it above; `(-X) & M` picks up the complementary part of the
+/// two's-complement negation. Their sum reconstitutes exactly `m·X`.
+///
+/// Writing `X = a_t·C`, the two summands appear (post-`reduce`) as terms scaled
+/// by a common `a`, each an `And` of `M = Add([Const(-1), Scale(b, C)])` and a
+/// core term — `a_t·C` in one, `-a_t·C` in the other — where `b = m·a_t` is an
+/// even multiple of `a_t`. The pair collapses to a single `Scale(a·b, C)` since
+/// `a·m·X = a·m·a_t·C = a·b·C`.
+struct LowBitMaskSplit;
+
+impl LowBitMaskSplit {
+    /// Splits `X & (m·X - 1)`: returns `(a, a_t, b, C)` for a term `a·(t & M)`
+    /// where `t = a_t·C`, `M = m·X - 1` carries even multiple `b` over the same
+    /// core `C`, and `b` is an even multiple of `a_t`.
+    fn split_masked<'a>(term: &'a Expr, mask: u64) -> Option<(u64, u64, u64, &'a Expr)> {
+        let (a, core) = split(term, mask);
+        let Expr::And(conj) = core else {
+            return None;
+        };
+        if conj.len() != 2 {
+            return None;
+        }
+        // One conjunct is the mask `M`, the other is the core term `t`.
+        for (i, j) in [(0, 1), (1, 0)] {
+            let Some((b, m_core)) = as_low_bit_mask(&conj[i], mask) else {
+                continue;
+            };
+            let (a_t, t_core) = split(&conj[j], mask);
+            if t_core != m_core || b.trailing_zeros() <= a_t.trailing_zeros() {
+                continue;
+            }
+            return Some((a, a_t, b, m_core));
+        }
+        None
+    }
+}
+
+impl Pattern for LowBitMaskSplit {
+    fn tags(&self) -> &'static [Tag] {
+        &[Tag::Add]
+    }
+
+    fn apply(&self, e: &Expr, mask: u64) -> Option<Expr> {
+        let Expr::Add(terms) = e else {
+            return None;
+        };
+        if terms.len() < 2 {
+            return None;
+        }
+
+        for i in 0..terms.len() {
+            let Some((a1, a_t1, b1, core1)) = Self::split_masked(&terms[i], mask) else {
+                continue;
+            };
+            for j in (i + 1)..terms.len() {
+                let Some((a2, a_t2, b2, core2)) = Self::split_masked(&terms[j], mask) else {
+                    continue;
+                };
+                // Same outer scale `a`, same mask `M` (core `C` and multiple `b`),
+                // and the two core terms negate each other (`a_t` and `-a_t`).
+                if a1 != a2
+                    || b1 != b2
+                    || core1 != core2
+                    || a_t1 != a_t2.wrapping_neg() & mask
+                {
+                    continue;
+                }
+
+                // Replace the pair with the single term `a·m·X = a·b·C`.
+                let coeff = crate::varint::VarInt::from(a1) * crate::varint::VarInt::from(b1);
+                let collapsed = Expr::scale(coeff.mask(mask), core1.clone());
+
+                let mut kept: Vec<Expr> = terms
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| *k != i && *k != j)
+                    .map(|(_, t)| t.clone())
+                    .collect();
+                if kept.is_empty() {
+                    return Some(collapsed);
+                }
+                kept.push(collapsed);
+                return Some(Expr::Add(kept).reduce(mask));
+            }
+        }
+
+        None
+    }
+}
+
 /// The registered patterns, tried in order at each node.
-static PATTERNS: &[&dyn Pattern] = &[&LowBitAnnihilator, &LowBitRedundantMask];
+static PATTERNS: &[&dyn Pattern] = &[
+    &LowBitAnnihilator,
+    &LowBitRedundantMask,
+    &LowBitMaskSplit,
+];
 
 /// Applies the registered patterns to `e`, walking bottom-up.
 pub fn apply_patterns(e: Expr, mask: u64) -> Expr {
@@ -421,5 +531,82 @@ mod tests {
                 "m={m} rewrite changed semantics"
             );
         }
+    }
+
+    /// `a·(X & M) + a·((-X) & M)` with `M = m·X - 1`, reduced and rewritten.
+    fn mask_split(x: Expr, a: u64, m: u64) -> Expr {
+        let mask = make_mask(N);
+        let mm = m * x.clone() - Expr::make_const(1);
+        let e = (a * (x.clone() & mm.clone()) + a * ((-x) & mm)).reduce(mask);
+        apply_patterns(e, mask)
+    }
+
+    #[test]
+    fn split_collapses_to_multiple() {
+        let mask = make_mask(N);
+        for a in [1u64, 3, 5] {
+            for m in [2u64, 4, 6, 8, 10] {
+                let expected = (a * (m * var(0))).reduce(mask);
+                assert_eq!(mask_split(var(0), a, m), expected, "a={a} m={m}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_is_semantically_equivalent() {
+        let mask = make_mask(N);
+        for a in [1u64, 3, 7] {
+            for m in [2u64, 4, 6, 12, 1 << 10] {
+                let x = var(0);
+                let mm = m * x.clone() - Expr::make_const(1);
+                let before = (a * (x.clone() & mm.clone()) + a * ((-x) & mm)).reduce(mask);
+                let after = apply_patterns(before.clone(), mask);
+                assert!(
+                    before.sem_equal(&after, mask, 500).is_ok(),
+                    "a={a} m={m} rewrite changed semantics"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_fires_on_scaled_core() {
+        // X = 2·y carries its own coefficient.
+        let mask = make_mask(N);
+        let x = 2u64 * var(0);
+        let expected = (3u64 * (6u64 * x.clone())).reduce(mask);
+        assert_eq!(mask_split(x, 3, 6), expected);
+    }
+
+    #[test]
+    fn split_fires_within_larger_add() {
+        let mask = make_mask(N);
+        let x = var(0);
+        let mm = 6u64 * x.clone() - Expr::make_const(1);
+        let e = (var(1) + 3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x.clone()) & mm)).reduce(mask);
+        let expected = (var(1) + 3u64 * (6u64 * x)).reduce(mask);
+        assert_eq!(apply_patterns(e, mask), expected);
+    }
+
+    #[test]
+    fn split_ignores_odd_multiple() {
+        // `3·X - 1` is an odd multiple: the identity does not hold.
+        let mask = make_mask(N);
+        let x = var(0);
+        let mm = 3u64 * x.clone() - Expr::make_const(1);
+        let e = (3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x) & mm)).reduce(mask);
+        let out = apply_patterns(e.clone(), mask);
+        assert_eq!(out, e);
+    }
+
+    #[test]
+    fn split_ignores_mismatched_scale() {
+        // Different outer scales `a` on the two summands: no collapse.
+        let mask = make_mask(N);
+        let x = var(0);
+        let mm = 6u64 * x.clone() - Expr::make_const(1);
+        let e = (3u64 * (x.clone() & mm.clone()) + 5u64 * ((-x) & mm)).reduce(mask);
+        let out = apply_patterns(e.clone(), mask);
+        assert_eq!(out, e);
     }
 }
