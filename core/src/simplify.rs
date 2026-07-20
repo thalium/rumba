@@ -1100,6 +1100,427 @@ fn expand_scope_hidden_atoms(
     }
 }
 
+fn synthesize_unary_bitwise_function(
+    parent: Expr,
+    truth_table: u8,
+    mask: u64,
+) -> Expr {
+    debug_assert!(truth_table < 4);
+    if truth_table == 0 {
+        return Expr::zero();
+    }
+    if truth_table == 0b11 {
+        return Expr::make_const(mask);
+    }
+    let mut minterms = Vec::new();
+    if truth_table & 1 != 0 {
+        minterms.push(!parent.clone());
+    }
+    if truth_table & 2 != 0 {
+        minterms.push(parent);
+    }
+    match minterms.len() {
+        0 => Expr::zero(),
+        1 => minterms.pop().unwrap(),
+        _ => Expr::Or(minterms),
+    }
+}
+
+fn synthesize_binary_bitwise_function(
+    left: Expr,
+    right: Expr,
+    truth_table: u8,
+    mask: u64,
+) -> Expr {
+    debug_assert!(truth_table < 16);
+    if truth_table == 0 {
+        return Expr::zero();
+    }
+    if truth_table == 0b1111 {
+        return Expr::make_const(mask);
+    }
+    let mut minterms = Vec::new();
+    for assignment in 0..4 {
+        if truth_table & (1 << assignment) == 0 {
+            continue;
+        }
+        let x = if assignment & 1 == 0 {
+            !left.clone()
+        } else {
+            left.clone()
+        };
+        let y = if assignment & 2 == 0 {
+            !right.clone()
+        } else {
+            right.clone()
+        };
+        minterms.push(x & y);
+    }
+    match minterms.len() {
+        0 => Expr::zero(),
+        1 => minterms.pop().unwrap(),
+        _ => Expr::Or(minterms),
+    }
+}
+
+const P7E_LITE_CLOSURE_PASSES: usize = 2;
+
+/// A word used as an opaque input by a certified P7e-lite dependency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BitwiseWordRef {
+    Original(VarId),
+    Hidden(VarId),
+}
+
+impl BitwiseWordRef {
+    fn atom(self) -> VarId {
+        match self {
+            Self::Original(atom) | Self::Hidden(atom) => atom,
+        }
+    }
+}
+
+/// A unary or binary bitwise dependency proved exactly by P7e-lite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CertifiedBitwiseDependency {
+    Unary {
+        target: VarId,
+        parent: BitwiseWordRef,
+        truth_table: u8,
+        candidate: Expr,
+    },
+    Binary {
+        target: VarId,
+        left: BitwiseWordRef,
+        right: BitwiseWordRef,
+        truth_table: u8,
+        candidate: Expr,
+    },
+}
+
+impl CertifiedBitwiseDependency {
+    pub fn target(&self) -> VarId {
+        match self {
+            Self::Unary { target, .. } | Self::Binary { target, .. } => *target,
+        }
+    }
+
+    pub fn candidate(&self) -> &Expr {
+        match self {
+            Self::Unary { candidate, .. } | Self::Binary { candidate, .. } => candidate,
+        }
+    }
+
+    fn parents(&self) -> Vec<BitwiseWordRef> {
+        match self {
+            Self::Unary { parent, .. } => vec![*parent],
+            Self::Binary { left, right, .. } => vec![*left, *right],
+        }
+    }
+
+    fn truth_table(&self) -> u8 {
+        match self {
+            Self::Unary { truth_table, .. } => *truth_table,
+            Self::Binary { truth_table, .. } => *truth_table,
+        }
+    }
+}
+
+/// Output of the minimal, diagnostic-only P7e-lite closure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BitwiseDependencyClosureExperiment {
+    pub scope: usize,
+    pub direct_atoms: Vec<VarId>,
+    pub closure_iterations: usize,
+    pub dependencies: Vec<CertifiedBitwiseDependency>,
+    pub substituted_pre_restore: Expr,
+    pub restored_after_substitution: Expr,
+    pub simplified_after_substitution: Expr,
+    pub residual_zero: bool,
+}
+
+fn apply_certified_dependencies(
+    mut expression: Expr,
+    dependencies: &[CertifiedBitwiseDependency],
+) -> Expr {
+    let mut ordered: Vec<_> = dependencies.iter().collect();
+    ordered.sort_by_key(|dependency| std::cmp::Reverse(dependency.target()));
+    for dependency in ordered {
+        expression = expression.replace_var(dependency.target(), dependency.candidate());
+    }
+    expression
+}
+
+fn canonical_bitwise_word(
+    mut word: BitwiseWordRef,
+    dependencies: &[CertifiedBitwiseDependency],
+) -> BitwiseWordRef {
+    let mut seen = HashSet::new();
+    while let BitwiseWordRef::Hidden(atom) = word {
+        if !seen.insert(atom) {
+            break;
+        }
+        let Some(CertifiedBitwiseDependency::Unary {
+            parent,
+            truth_table: 0b10,
+            ..
+        }) = dependencies.iter().find(|dependency| dependency.target() == atom)
+        else {
+            break;
+        };
+        word = *parent;
+    }
+    word
+}
+
+fn collect_p7e_parent_words(
+    target: VarId,
+    pre_restore_result: &Expr,
+    direct_atoms: &[VarId],
+    hidden_atoms: &HashSet<VarId>,
+    dependencies: &[CertifiedBitwiseDependency],
+) -> Vec<BitwiseWordRef> {
+    let mut candidates = Vec::new();
+    let push = |word: BitwiseWordRef, candidates: &mut Vec<BitwiseWordRef>| {
+        let word = canonical_bitwise_word(word, dependencies);
+        if word.atom() != target && !candidates.contains(&word) {
+            candidates.push(word);
+        }
+    };
+
+    // Hidden dependencies only point to older atoms, which makes cycles
+    // impossible without a separate graph algorithm.
+    let mut other_direct: Vec<_> = direct_atoms
+        .iter()
+        .copied()
+        .filter(|atom| atom.0 < target.0)
+        .collect();
+    other_direct.sort();
+    for atom in other_direct {
+        push(BitwiseWordRef::Hidden(atom), &mut candidates);
+    }
+
+    let mut residual_vars: Vec<_> = pre_restore_result.get_vars().into_iter().collect();
+    residual_vars.sort();
+    for atom in residual_vars.into_iter().filter(|atom| {
+        !hidden_atoms.contains(atom)
+    }) {
+        push(BitwiseWordRef::Original(atom), &mut candidates);
+    }
+
+    candidates
+}
+
+fn p7e_parent_pairs(words: &[BitwiseWordRef]) -> Vec<(BitwiseWordRef, BitwiseWordRef)> {
+    let mut pairs = Vec::new();
+    for left in 0..words.len() {
+        for right in left + 1..words.len() {
+            pairs.push((words[left], words[right]));
+        }
+    }
+    pairs
+}
+
+fn expand_p7e_expression(
+    expression: Expr,
+    atoms: &HashMap<VarId, &HiddenAtomTrace>,
+    dependencies: &[CertifiedBitwiseDependency],
+) -> Expr {
+    expand_scope_hidden_atoms(
+        apply_certified_dependencies(expression, dependencies),
+        atoms,
+    )
+}
+
+fn certify_p7e_candidate(
+    target: VarId,
+    scoped_definition: &Expr,
+    candidate: Expr,
+    parents: Vec<BitwiseWordRef>,
+    truth_table: u8,
+    unary: bool,
+    bit_width: u8,
+    atoms: &HashMap<VarId, &HiddenAtomTrace>,
+    dependencies: &[CertifiedBitwiseDependency],
+) -> Option<CertifiedBitwiseDependency> {
+    let mask = make_mask(bit_width);
+    let scoped_candidate = expand_p7e_expression(candidate.clone(), atoms, dependencies);
+    let scoped_relation = (scoped_definition.clone() - scoped_candidate).reduce(mask);
+    if simplify_mba(scoped_relation, bit_width) != Ok(Expr::zero()) {
+        return None;
+    }
+
+    if unary {
+        Some(CertifiedBitwiseDependency::Unary {
+            target,
+            parent: parents[0],
+            truth_table,
+            candidate,
+        })
+    } else {
+        Some(CertifiedBitwiseDependency::Binary {
+            target,
+            left: parents[0],
+            right: parents[1],
+            truth_table,
+            candidate,
+        })
+    }
+}
+
+fn p7e_dependency_score(
+    dependency: &CertifiedBitwiseDependency,
+) -> (usize, usize, u8, Vec<BitwiseWordRef>) {
+    (
+        dependency.parents().len(),
+        dependency.candidate().size(),
+        dependency.truth_table(),
+        dependency.parents(),
+    )
+}
+
+/// Search a bounded unary/binary closure over the direct opaque words in one
+/// traced scope. This is diagnostic-only and never changes normal solving.
+pub fn experiment_bitwise_dependency_closure(
+    scope: &HiddenScopeTrace,
+) -> Result<Option<BitwiseDependencyClosureExperiment>, SolveError> {
+    let Some(pre_restore_result) = &scope.pre_restore_result else {
+        return Ok(None);
+    };
+    let atoms: HashMap<_, _> = scope.atoms.iter().map(|atom| (atom.atom, atom)).collect();
+    let hidden_atoms: HashSet<_> = atoms.keys().copied().collect();
+    let mut direct_atoms: Vec<_> = pre_restore_result
+        .get_vars()
+        .into_iter()
+        .filter(|atom| hidden_atoms.contains(atom))
+        .collect();
+    direct_atoms.sort();
+
+    let mask = make_mask(scope.bit_width);
+    let mut dependencies = Vec::new();
+    let mut closure_iterations = 0;
+
+    for _ in 0..P7E_LITE_CLOSURE_PASSES {
+        let mut newly_proved = Vec::new();
+        for target in direct_atoms.iter().copied().filter(|target| {
+            !dependencies
+                .iter()
+                .any(|dependency: &CertifiedBitwiseDependency| dependency.target() == *target)
+        }) {
+            let atom = atoms[&target];
+            let base_definition = atom
+                .dependency_definition
+                .clone()
+                .unwrap_or_else(|| atom.simplified.clone());
+            let compact_definition =
+                apply_certified_dependencies(base_definition, &dependencies).reduce(mask);
+            let newly_proved_targets: HashSet<_> = newly_proved
+                .iter()
+                .map(CertifiedBitwiseDependency::target)
+                .collect();
+            if compact_definition
+                .get_vars()
+                .iter()
+                .any(|atom| newly_proved_targets.contains(atom))
+            {
+                continue;
+            }
+            let parents = collect_p7e_parent_words(
+                target,
+                pre_restore_result,
+                &direct_atoms,
+                &hidden_atoms,
+                &dependencies,
+            );
+            let scoped_definition = expand_p7e_expression(
+                compact_definition.clone(),
+                &atoms,
+                &dependencies,
+            );
+            let mut candidates = Vec::new();
+
+            for parent in &parents {
+                for truth_table in 0..4 {
+                    let candidate = synthesize_unary_bitwise_function(
+                        Expr::Var(parent.atom()),
+                        truth_table,
+                        mask,
+                    );
+                    if let Some(dependency) = certify_p7e_candidate(
+                        target,
+                        &scoped_definition,
+                        candidate,
+                        vec![*parent],
+                        truth_table,
+                        true,
+                        scope.bit_width,
+                        &atoms,
+                        &dependencies,
+                    ) {
+                        candidates.push(dependency);
+                    }
+                }
+            }
+
+            for (left, right) in p7e_parent_pairs(&parents) {
+                for truth_table in 0..16 {
+                    let candidate = synthesize_binary_bitwise_function(
+                        Expr::Var(left.atom()),
+                        Expr::Var(right.atom()),
+                        truth_table,
+                        mask,
+                    );
+                    if let Some(dependency) = certify_p7e_candidate(
+                        target,
+                        &scoped_definition,
+                        candidate,
+                        vec![left, right],
+                        truth_table,
+                        false,
+                        scope.bit_width,
+                        &atoms,
+                        &dependencies,
+                    ) {
+                        candidates.push(dependency);
+                    }
+                }
+            }
+
+            if let Some(best) = candidates
+                .into_iter()
+                .min_by_key(p7e_dependency_score)
+            {
+                newly_proved.push(best);
+            }
+        }
+
+        if newly_proved.is_empty() {
+            break;
+        }
+        newly_proved.sort_by_key(CertifiedBitwiseDependency::target);
+        dependencies.extend(newly_proved);
+        closure_iterations += 1;
+    }
+
+    let substituted_pre_restore =
+        apply_certified_dependencies(pre_restore_result.clone(), &dependencies);
+    let restored_after_substitution =
+        expand_scope_hidden_atoms(substituted_pre_restore.clone(), &atoms);
+    let simplified_after_substitution =
+        simplify_mba(restored_after_substitution.clone(), scope.bit_width)?;
+
+    Ok(Some(BitwiseDependencyClosureExperiment {
+        scope: scope.scope,
+        direct_atoms,
+        closure_iterations,
+        dependencies,
+        substituted_pre_restore,
+        restored_after_substitution,
+        residual_zero: simplified_after_substitution == Expr::zero(),
+        simplified_after_substitution,
+    }))
+}
+
 /// Certify one explicitly predicted dependency. This P7e-micro entry point
 /// intentionally performs no candidate enumeration.
 pub fn experiment_expected_bitwise_dependency(
@@ -2491,6 +2912,147 @@ pub fn simplify_mba_with_cache<C: LinearCache>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitwise_truth_tables_use_mask_for_true_and_synthesize_expected_functions() {
+        let mask = make_mask(8);
+        let x = Expr::Var(0.into());
+        let y = Expr::Var(1.into());
+        let cases = [
+            (
+                synthesize_unary_bitwise_function(x.clone(), 0b11, mask),
+                Expr::make_const(mask),
+            ),
+            (
+                synthesize_binary_bitwise_function(x.clone(), y.clone(), 0b1111, mask),
+                Expr::make_const(mask),
+            ),
+            (synthesize_unary_bitwise_function(x.clone(), 0b10, mask), x.clone()),
+            (synthesize_unary_bitwise_function(x.clone(), 0b01, mask), !x.clone()),
+            (
+                synthesize_binary_bitwise_function(x.clone(), y.clone(), 0b0110, mask),
+                x.clone() ^ y.clone(),
+            ),
+            (
+                synthesize_binary_bitwise_function(x.clone(), y.clone(), 0b0001, mask),
+                !(x | y),
+            ),
+        ];
+
+        for (candidate, expected) in cases {
+            for xv in 0..=mask {
+                for yv in 0..=mask {
+                    assert_eq!(
+                        candidate.eval(&[xv, yv]).get(mask),
+                        expected.eval(&[xv, yv]).get(mask),
+                    );
+                }
+            }
+        }
+    }
+
+    fn p7e_test_atom(atom: usize, definition: Expr) -> HiddenAtomTrace {
+        let mut free_atoms: Vec<_> = definition.get_vars().into_iter().collect();
+        free_atoms.sort();
+        HiddenAtomTrace {
+            atom: atom.into(),
+            original: definition.clone(),
+            simplified: definition,
+            free_atoms,
+            dependent_atoms: Vec::new(),
+            dependency_definition: None,
+            dependency_kind: HiddenAtomDependencyKind::Root,
+        }
+    }
+
+    fn p7e_test_scope(pre_restore: Expr, atoms: Vec<HiddenAtomTrace>) -> HiddenScopeTrace {
+        HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore),
+            atoms,
+        }
+    }
+
+    #[test]
+    fn p7e_lite_rejects_boolean_cube_only_and_partial_word_candidates() {
+        let x = Expr::Var(0.into());
+        for definition in [
+            x.clone() * x.clone() - x.clone(),
+            x.clone() & Expr::make_const(1),
+        ] {
+            let target = 1usize;
+            let pre_restore = Expr::Var(target.into());
+            let scope = p7e_test_scope(
+                pre_restore.clone(),
+                vec![p7e_test_atom(target, definition)],
+            );
+            let experiment = experiment_bitwise_dependency_closure(&scope)
+                .unwrap()
+                .unwrap();
+
+            assert!(experiment.dependencies.is_empty());
+            assert_eq!(experiment.substituted_pre_restore, pre_restore);
+        }
+    }
+
+    #[test]
+    fn p7e_lite_never_creates_a_hidden_atom_cycle() {
+        let lower: VarId = 1.into();
+        let higher: VarId = 2.into();
+        let pre_restore = Expr::Var(lower) + Expr::Var(higher);
+        let scope = p7e_test_scope(
+            pre_restore,
+            vec![
+                p7e_test_atom(lower.0, Expr::Var(higher)),
+                p7e_test_atom(higher.0, Expr::Var(lower)),
+            ],
+        );
+        let experiment = experiment_bitwise_dependency_closure(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert!(experiment.dependencies.iter().all(|dependency| {
+            dependency.parents().into_iter().all(|parent| match parent {
+                BitwiseWordRef::Original(_) => true,
+                BitwiseWordRef::Hidden(parent) => parent.0 < dependency.target().0,
+            })
+        }));
+    }
+
+    #[test]
+    fn p7e_lite_selects_correlated_candidates_deterministically() {
+        let x = Expr::Var(0.into());
+        let alias: VarId = 1.into();
+        let target: VarId = 2.into();
+        let pre_restore = Expr::Var(target) - Expr::Var(alias);
+        let scope = p7e_test_scope(
+            pre_restore,
+            vec![
+                p7e_test_atom(alias.0, x.clone()),
+                p7e_test_atom(target.0, x),
+            ],
+        );
+
+        let first = experiment_bitwise_dependency_closure(&scope)
+            .unwrap()
+            .unwrap();
+        let second = experiment_bitwise_dependency_closure(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(first.dependencies, second.dependencies);
+        assert!(first.dependencies.iter().any(|dependency| matches!(
+            dependency,
+            CertifiedBitwiseDependency::Unary {
+                target: selected,
+                parent: BitwiseWordRef::Hidden(parent),
+                truth_table: 0b10,
+                ..
+            } if *selected == target && *parent == alias
+        )));
+    }
 
     #[test]
     fn recognizes_zero_and_all_ones_as_bitwise_constants() {

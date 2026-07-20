@@ -4,10 +4,12 @@ use rumba_core::{
     expr::Expr,
     parser::parse_expr,
     simplify::{
-        CertifiedSemanticAlias, ComplementRelationProof, DirectComplementExperiment,
-        ExpectedBitwiseDependency, ExpectedDependencyExperiment,
+        BitwiseDependencyClosureExperiment, BitwiseWordRef,
+        CertifiedBitwiseDependency, CertifiedSemanticAlias, ComplementRelationProof,
+        DirectComplementExperiment, ExpectedBitwiseDependency, ExpectedDependencyExperiment,
         GuidedSemanticAliasExperiment, GuidedTernaryExperiment, SemanticAlias,
         SemanticAliasProof, diagnose_hidden_atoms,
+        experiment_bitwise_dependency_closure,
         experiment_direct_complement_relation, experiment_guided_semantic_aliases,
         experiment_expected_bitwise_dependency, experiment_guided_ternary_relations,
         simplify_mba,
@@ -211,6 +213,121 @@ fn qsynth_expected_dependency_experiment(
     experiment_expected_bitwise_dependency(scope, &dependency, initial_aliases)
         .unwrap()
         .expect("expected target is absent from final scope")
+}
+
+fn qsynth_dependency_closure(line: usize) -> BitwiseDependencyClosureExperiment {
+    let (mba, ground_truth) = qsynth_case(line);
+    let simplified_mba = simplify_mba(mba, BIT_COUNT).unwrap();
+    let simplified_ground_truth = simplify_mba(ground_truth, BIT_COUNT).unwrap();
+    let (residual, trace) = diagnose_hidden_atoms(
+        simplified_ground_truth - simplified_mba,
+        BIT_COUNT,
+    )
+    .unwrap();
+    let scope = trace
+        .iter()
+        .find(|scope| scope.input == residual)
+        .expect("missing final residual scope");
+
+    experiment_bitwise_dependency_closure(scope)
+        .unwrap()
+        .expect("final scope does not have a pre-restoration result")
+}
+
+#[test]
+fn p7e_lite_resolves_all_five_qsynth_regressions_without_hardcoded_candidates() {
+    for line in [53, 249, 260, 369, 481] {
+        let experiment = qsynth_dependency_closure(line);
+        assert!(
+            experiment.residual_zero,
+            "line {line}: deps={:?}; residual={}",
+            experiment.dependencies,
+            experiment.simplified_after_substitution,
+        );
+        assert!(!experiment.dependencies.is_empty(), "line {line}");
+    }
+}
+
+#[test]
+fn p7e_lite_recovers_expected_unary_and_binary_truth_tables() {
+    let line_53 = qsynth_dependency_closure(53);
+    assert!(line_53.dependencies.iter().any(|dependency| matches!(
+        dependency,
+        CertifiedBitwiseDependency::Binary {
+            target,
+            left,
+            right,
+            truth_table: 0b0001,
+            ..
+        } if *target == 7.into()
+            && [*left, *right].contains(&BitwiseWordRef::Original(2.into()))
+            && [*left, *right].contains(&BitwiseWordRef::Hidden(6.into()))
+    )));
+
+    let line_249 = qsynth_dependency_closure(249);
+    assert!(line_249.dependencies.iter().any(|dependency| matches!(
+        dependency,
+        CertifiedBitwiseDependency::Binary {
+            target,
+            left,
+            right,
+            truth_table: 0b0110,
+            ..
+        } if *target == 4.into()
+            && [*left, *right].contains(&BitwiseWordRef::Original(1.into()))
+            && [*left, *right].contains(&BitwiseWordRef::Hidden(3.into()))
+    )));
+
+    let line_369 = qsynth_dependency_closure(369);
+    assert!(line_369.dependencies.iter().any(|dependency| matches!(
+        dependency,
+        CertifiedBitwiseDependency::Unary {
+            target,
+            parent: BitwiseWordRef::Hidden(parent),
+            truth_table: 0b01,
+            ..
+        } if *target == 9.into() && *parent == 7.into()
+    )));
+
+    let line_481 = qsynth_dependency_closure(481);
+    assert!(line_481.dependencies.iter().any(|dependency| matches!(
+        dependency,
+        CertifiedBitwiseDependency::Unary {
+            target,
+            parent: BitwiseWordRef::Hidden(parent),
+            truth_table: 0b10,
+            ..
+        } if *target == 7.into() && *parent == 6.into()
+    )));
+}
+
+#[test]
+fn p7e_lite_closure_applies_qsynth_260_alias_before_nor() {
+    let experiment = qsynth_dependency_closure(260);
+
+    assert_eq!(experiment.closure_iterations, 2);
+    assert!(experiment.dependencies.iter().any(|dependency| matches!(
+        dependency,
+        CertifiedBitwiseDependency::Unary {
+            target,
+            parent: BitwiseWordRef::Hidden(parent),
+            truth_table: 0b10,
+            ..
+        } if *target == 9.into() && *parent == 8.into()
+    )));
+    assert!(experiment.dependencies.iter().any(|dependency| matches!(
+        dependency,
+        CertifiedBitwiseDependency::Binary {
+            target,
+            left,
+            right,
+            truth_table: 0b0001,
+            ..
+        } if *target == 10.into()
+            && [*left, *right].contains(&BitwiseWordRef::Original(0.into()))
+            && [*left, *right].contains(&BitwiseWordRef::Hidden(8.into()))
+    )));
+    assert!(experiment.residual_zero);
 }
 
 #[test]
