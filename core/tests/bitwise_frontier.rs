@@ -118,7 +118,7 @@ fn simplifies_kernel_with_polynomial_and_arithmetic_operands() {
 macro_rules! qsynth_regression {
     ($name:ident, $line:literal) => {
         #[test]
-        #[ignore = "known NG until local bitwise-frontier normalization is implemented"]
+        #[ignore = "known NG: P6 found unresolved arithmetic hidden-atom dependencies"]
         fn $name() {
             assert_qsynth_case_is_resolved($line);
         }

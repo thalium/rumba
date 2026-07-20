@@ -24,6 +24,182 @@ const MAX_FRONTIER_ATOMS: usize = 4;
 const MAX_FRONTIER_SIGNATURE_SIZE: usize = 16;
 const MAX_TRANSFORMED_AST_FACTOR: usize = 4;
 
+/// Classification used by the opt-in hidden-atom diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HiddenAtomDependencyKind {
+    Root,
+    BitwiseDependent,
+    ArithmeticDependent,
+    LowBitCandidate,
+}
+
+/// One atom introduced by `hide_in_var` while diagnostics are enabled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HiddenAtomTrace {
+    pub atom: VarId,
+    pub original: Expr,
+    pub simplified: Expr,
+    pub free_atoms: Vec<VarId>,
+    pub dependent_atoms: Vec<VarId>,
+    pub dependency_definition: Option<Expr>,
+    pub dependency_kind: HiddenAtomDependencyKind,
+}
+
+/// Hidden atoms created by one recursive solver invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HiddenScopeTrace {
+    pub scope: usize,
+    pub bit_width: u8,
+    pub input: Expr,
+    pub atoms: Vec<HiddenAtomTrace>,
+}
+
+#[derive(Default)]
+struct HiddenTraceState {
+    next_scope: usize,
+    scopes: Vec<HiddenScopeTrace>,
+}
+
+thread_local! {
+    static HIDDEN_TRACE_STATE: RefCell<Option<HiddenTraceState>> = const { RefCell::new(None) };
+}
+
+fn begin_hidden_trace_scope(input: &Expr, bit_width: u8) -> Option<usize> {
+    HIDDEN_TRACE_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut()?;
+        let scope = state.next_scope;
+        state.next_scope += 1;
+        state.scopes.push(HiddenScopeTrace {
+            scope,
+            bit_width,
+            input: input.clone(),
+            atoms: Vec::new(),
+        });
+        Some(scope)
+    })
+}
+
+fn record_hidden_atom(scope: Option<usize>, atom: VarId, original: Expr, simplified: Expr) {
+    let Some(scope) = scope else {
+        return;
+    };
+
+    let mut free_atoms: Vec<_> = simplified.get_vars().into_iter().collect();
+    free_atoms.sort();
+    HIDDEN_TRACE_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().expect("hidden-atom trace scope without session");
+        let scope = state
+            .scopes
+            .iter_mut()
+            .find(|candidate| candidate.scope == scope)
+            .expect("unknown hidden-atom trace scope");
+        scope.atoms.push(HiddenAtomTrace {
+            atom,
+            original,
+            simplified,
+            free_atoms,
+            dependent_atoms: Vec::new(),
+            dependency_definition: None,
+            dependency_kind: HiddenAtomDependencyKind::Root,
+        });
+    });
+}
+
+fn is_strict_bitwise_definition(e: &Expr, mask: u64) -> bool {
+    match e {
+        Expr::Const(c) => is_bitwise_constant(*c, mask),
+        Expr::Var(_) => true,
+        Expr::Not(e) => is_strict_bitwise_definition(e, mask),
+        Expr::And(es) | Expr::Or(es) | Expr::Xor(es) => {
+            es.iter().all(|e| is_strict_bitwise_definition(e, mask))
+        }
+        Expr::Scale(_, _) | Expr::Add(_) | Expr::Mul(_) => false,
+    }
+}
+
+fn contains_lowbit_candidate(e: &Expr, mask: u64) -> bool {
+    let is_lowbit_and = |terms: &[Expr]| {
+        terms.iter().enumerate().any(|(i, left)| {
+            let negated = (-left.clone()).reduce(mask);
+            terms
+                .iter()
+                .enumerate()
+                .any(|(j, right)| i != j && right.clone().reduce(mask) == negated)
+        })
+    };
+
+    match e {
+        Expr::And(es) if is_lowbit_and(es) => true,
+        Expr::Var(_) | Expr::Const(_) => false,
+        Expr::Not(e) | Expr::Scale(_, e) => contains_lowbit_candidate(e, mask),
+        Expr::And(es)
+        | Expr::Or(es)
+        | Expr::Xor(es)
+        | Expr::Add(es)
+        | Expr::Mul(es) => es.iter().any(|e| contains_lowbit_candidate(e, mask)),
+    }
+}
+
+fn abstract_known_hidden_atoms(
+    e: &Expr,
+    current: VarId,
+    definitions: &[(VarId, Expr)],
+) -> Expr {
+    if let Some((atom, _)) = definitions
+        .iter()
+        .find(|(atom, definition)| *atom != current && definition == e)
+    {
+        return Expr::Var(*atom);
+    }
+
+    e.clone()
+        .map(|e| abstract_known_hidden_atoms(&e, current, definitions))
+}
+
+fn finalize_hidden_trace(mut state: HiddenTraceState) -> Vec<HiddenScopeTrace> {
+    for scope in &mut state.scopes {
+        let hidden_atoms: HashSet<_> = scope.atoms.iter().map(|atom| atom.atom).collect();
+        let definitions: Vec<_> = scope
+            .atoms
+            .iter()
+            .map(|atom| (atom.atom, atom.simplified.clone()))
+            .collect();
+        let mask = make_mask(scope.bit_width);
+
+        for atom in &mut scope.atoms {
+            let dependency_definition = abstract_known_hidden_atoms(
+                &atom.simplified,
+                atom.atom,
+                &definitions,
+            );
+            atom.dependent_atoms = dependency_definition
+                .get_vars()
+                .iter()
+                .copied()
+                .filter(|var| hidden_atoms.contains(var))
+                .collect();
+            atom.dependent_atoms.sort();
+            atom.dependency_definition =
+                (!atom.dependent_atoms.is_empty()).then_some(dependency_definition.clone());
+            atom.dependency_kind = if contains_lowbit_candidate(&atom.simplified, mask)
+                || contains_lowbit_candidate(&dependency_definition, mask)
+            {
+                HiddenAtomDependencyKind::LowBitCandidate
+            } else if atom.dependent_atoms.is_empty() {
+                HiddenAtomDependencyKind::Root
+            } else if is_strict_bitwise_definition(&dependency_definition, mask) {
+                HiddenAtomDependencyKind::BitwiseDependent
+            } else {
+                HiddenAtomDependencyKind::ArithmeticDependent
+            };
+        }
+    }
+
+    state.scopes
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ExprCost {
     arithmetic_bitwise_alternations: usize,
@@ -488,6 +664,9 @@ struct MBASolver<'a, C: LinearCache> {
 
     /// A cache for simplifying linear MBAs
     l_cache: &'a C,
+
+    /// Present only while `diagnose_hidden_atoms` is collecting this invocation.
+    trace_scope: Option<usize>,
 }
 
 fn is_bitwise_constant(c: VarInt, mask: u64) -> bool {
@@ -498,6 +677,7 @@ fn is_bitwise_constant(c: VarInt, mask: u64) -> bool {
 impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// Create a new Solver
     fn new(l_cache: &'a C, e: &Expr, n: u8) -> Self {
+        let trace_scope = begin_hidden_trace_scope(e, n);
         Self {
             non_linear_components: BiMap::new(),
             t: e.get_vars().iter().copied().map(|v| v.0).max().unwrap_or(0) + 1,
@@ -505,6 +685,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             n,
             mask: make_mask(n),
             l_cache,
+            trace_scope,
         }
     }
 
@@ -925,6 +1106,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// Hides a non linear element behind a variable
     fn hide_in_var(&mut self, e: Expr, mask: u64) -> Result<Expr, SolveError> {
         debug!("e={} is not linear and will be replaced by a variable", e);
+        let original = e.clone();
 
         let e = match e {
             Expr::Const(_) => e,
@@ -944,7 +1126,8 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             let v = self.t.into();
             debug!("Creating variable v{} for e={}", v, e);
             self.t += 1;
-            self.non_linear_components.insert(v, e);
+            self.non_linear_components.insert(v, e.clone());
+            record_hidden_atom(self.trace_scope, v, original, e);
             Ok(Expr::Var(v))
         }
     }
@@ -1213,6 +1396,34 @@ pub fn simplify_mba(e: Expr, n: u8) -> Result<Expr, SolveError> {
     simplify_mba_with_cache(&LocalCache::new(), e, n)
 }
 
+/// Simplify one expression while collecting the hidden atoms created by each
+/// recursive solver invocation. This is an opt-in diagnostic; ordinary calls
+/// to [`simplify_mba`] do not retain traces.
+pub fn diagnose_hidden_atoms(
+    e: Expr,
+    n: u8,
+) -> Result<(Expr, Vec<HiddenScopeTrace>), SolveError> {
+    HIDDEN_TRACE_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        assert!(state.is_none(), "hidden-atom diagnostics cannot be nested");
+        *state = Some(HiddenTraceState::default());
+    });
+
+    let result = simplify_mba(e, n);
+    let state = HIDDEN_TRACE_STATE.with(|state| {
+        state
+            .borrow_mut()
+            .take()
+            .expect("hidden-atom diagnostic state disappeared")
+    });
+    let scopes = finalize_hidden_trace(state)
+        .into_iter()
+        .filter(|scope| !scope.atoms.is_empty())
+        .collect();
+
+    result.map(|simplified| (simplified, scopes))
+}
+
 fn simplify_to_fixed_point<F>(mut e: Expr, mut simplify: F) -> Result<Expr, SolveError>
 where
     F: FnMut(Expr) -> Result<Expr, SolveError>,
@@ -1401,5 +1612,32 @@ mod tests {
 
         assert_eq!(normalized, frontier.clone().reduce(make_mask(64)));
         assert_eq!(metrics.max_frontier_atoms, 2);
+    }
+
+    #[test]
+    fn hidden_atom_diagnostics_classify_arithmetic_dependencies() {
+        let product = Expr::Var(0.into()) * Expr::Var(1.into());
+        let expression = product.clone() & (VarInt::from(2u64) * product);
+
+        let (_, scopes) = diagnose_hidden_atoms(expression, 64).unwrap();
+        let atoms: Vec<_> = scopes.iter().flat_map(|scope| &scope.atoms).collect();
+
+        assert!(atoms.iter().any(|atom| {
+            atom.dependency_kind == HiddenAtomDependencyKind::ArithmeticDependent
+                && !atom.dependent_atoms.is_empty()
+        }));
+        HIDDEN_TRACE_STATE.with(|state| assert!(state.borrow().is_none()));
+    }
+
+    #[test]
+    fn hidden_atom_diagnostics_detect_structural_lowbit_candidates() {
+        let x = Expr::Var(0.into());
+        let lowbit = x.clone() & -x.clone();
+
+        assert!(contains_lowbit_candidate(&lowbit, make_mask(64)));
+        assert!(!contains_lowbit_candidate(
+            &(x & Expr::Var(1.into())),
+            make_mask(64)
+        ));
     }
 }

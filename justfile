@@ -26,6 +26,10 @@ all-test:
 bitwise-frontier-baseline:
     scripts/test_bitwise_frontier.sh
 
+# Classify hidden-atom dependencies in the five QSynth regressions
+hidden-atom-diagnostics *ARGS:
+    cargo run -p rumba-core --release --all-features --example hidden_atom_diagnostics -- {{ARGS}}
+
 bench:
     cargo bench --all-features
 
