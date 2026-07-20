@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 use rumba_core::{
     expr::Expr,
     parser::parse_expr,
-    simplify::simplify_mba,
+    simplify::{
+        BitwiseFrontierStats, bitwise_frontier_stats, reset_bitwise_frontier_stats, simplify_mba,
+    },
     varint::make_mask,
 };
 
@@ -35,6 +37,7 @@ struct ResultRow {
     elapsed: Duration,
     input_nodes: usize,
     output_nodes: Option<usize>,
+    frontier: BitwiseFrontierStats,
 }
 
 fn parse_case(line_number: usize) -> (Expr, Expr) {
@@ -59,6 +62,7 @@ fn parse_case(line_number: usize) -> (Expr, Expr) {
 fn classify(line: usize) -> ResultRow {
     let (mba, ground_truth) = parse_case(line);
     let input_nodes = mba.size();
+    reset_bitwise_frontier_stats();
     let start = Instant::now();
     let simplified = simplify_mba(mba, BIT_COUNT);
     let elapsed = start.elapsed();
@@ -70,6 +74,7 @@ fn classify(line: usize) -> ResultRow {
             elapsed,
             input_nodes,
             output_nodes: None,
+            frontier: bitwise_frontier_stats(),
         };
     };
 
@@ -103,6 +108,7 @@ fn classify(line: usize) -> ResultRow {
         elapsed,
         input_nodes,
         output_nodes,
+        frontier: bitwise_frontier_stats(),
     }
 }
 
@@ -115,12 +121,19 @@ fn main() {
             .output_nodes
             .map_or_else(|| "rejected".to_owned(), |size| size.to_string());
         println!(
-            "line={} status={} solve_us={:.2} input_nodes={} output_nodes={}",
+            "line={} status={} solve_us={:.2} input_nodes={} output_nodes={} frontier_attempts={} frontier_successes={} frontier_atom_aborts={} frontier_size_aborts={} frontier_max_atoms={} frontier_node_delta={} frontier_cost_delta={}",
             result.line,
             result.status.as_str(),
             result.elapsed.as_secs_f64() * 1_000_000.0,
             result.input_nodes,
             output_nodes,
+            result.frontier.attempts,
+            result.frontier.successes,
+            result.frontier.aborts_atom_limit,
+            result.frontier.aborts_size_limit,
+            result.frontier.max_frontier_atoms,
+            result.frontier.candidate_node_delta,
+            result.frontier.candidate_cost_delta,
         );
     }
 

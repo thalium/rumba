@@ -4,7 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
 };
 
@@ -20,6 +20,129 @@ use log::debug;
 /// solve. The signature is `2^t` wide, so this bounds one solve at 1M entries.
 pub const MAX_VARS: usize = 20;
 const MAX_SIMPLIFICATION_PASSES: usize = 8;
+const MAX_FRONTIER_ATOMS: usize = 4;
+const MAX_FRONTIER_SIGNATURE_SIZE: usize = 16;
+const MAX_TRANSFORMED_AST_FACTOR: usize = 4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ExprCost {
+    arithmetic_bitwise_alternations: usize,
+    ast_nodes: usize,
+    printed_size: usize,
+}
+
+#[derive(Default)]
+struct BitwiseFrontierMetrics {
+    attempts: usize,
+    normalized: usize,
+    aborts_atom_limit: usize,
+    aborts_size_limit: usize,
+    max_frontier_atoms: usize,
+}
+
+/// Aggregate activity of the bounded bitwise-frontier pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BitwiseFrontierStats {
+    pub attempts: u64,
+    pub successes: u64,
+    pub aborts_atom_limit: u64,
+    pub aborts_size_limit: u64,
+    pub max_frontier_atoms: u64,
+    pub candidate_node_delta: i64,
+    pub candidate_cost_delta: i64,
+}
+
+static BITWISE_FRONTIER_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static BITWISE_FRONTIER_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+static BITWISE_FRONTIER_ABORTS_ATOM_LIMIT: AtomicU64 = AtomicU64::new(0);
+static BITWISE_FRONTIER_ABORTS_SIZE_LIMIT: AtomicU64 = AtomicU64::new(0);
+static BITWISE_FRONTIER_MAX_ATOMS: AtomicU64 = AtomicU64::new(0);
+static BITWISE_FRONTIER_NODE_DELTA: AtomicI64 = AtomicI64::new(0);
+static BITWISE_FRONTIER_COST_DELTA: AtomicI64 = AtomicI64::new(0);
+
+/// Read the process-wide bitwise-frontier counters.
+pub fn bitwise_frontier_stats() -> BitwiseFrontierStats {
+    BitwiseFrontierStats {
+        attempts: BITWISE_FRONTIER_ATTEMPTS.load(Ordering::Relaxed),
+        successes: BITWISE_FRONTIER_SUCCESSES.load(Ordering::Relaxed),
+        aborts_atom_limit: BITWISE_FRONTIER_ABORTS_ATOM_LIMIT.load(Ordering::Relaxed),
+        aborts_size_limit: BITWISE_FRONTIER_ABORTS_SIZE_LIMIT.load(Ordering::Relaxed),
+        max_frontier_atoms: BITWISE_FRONTIER_MAX_ATOMS.load(Ordering::Relaxed),
+        candidate_node_delta: BITWISE_FRONTIER_NODE_DELTA.load(Ordering::Relaxed),
+        candidate_cost_delta: BITWISE_FRONTIER_COST_DELTA.load(Ordering::Relaxed),
+    }
+}
+
+/// Reset bitwise-frontier counters before an isolated measurement.
+pub fn reset_bitwise_frontier_stats() {
+    BITWISE_FRONTIER_ATTEMPTS.store(0, Ordering::Relaxed);
+    BITWISE_FRONTIER_SUCCESSES.store(0, Ordering::Relaxed);
+    BITWISE_FRONTIER_ABORTS_ATOM_LIMIT.store(0, Ordering::Relaxed);
+    BITWISE_FRONTIER_ABORTS_SIZE_LIMIT.store(0, Ordering::Relaxed);
+    BITWISE_FRONTIER_MAX_ATOMS.store(0, Ordering::Relaxed);
+    BITWISE_FRONTIER_NODE_DELTA.store(0, Ordering::Relaxed);
+    BITWISE_FRONTIER_COST_DELTA.store(0, Ordering::Relaxed);
+}
+
+fn record_bitwise_frontier_metrics(
+    metrics: &BitwiseFrontierMetrics,
+    accepted: bool,
+    node_delta: isize,
+    cost_delta: isize,
+) {
+    BITWISE_FRONTIER_ATTEMPTS.fetch_add(metrics.attempts as u64, Ordering::Relaxed);
+    BITWISE_FRONTIER_SUCCESSES.fetch_add(u64::from(accepted), Ordering::Relaxed);
+    BITWISE_FRONTIER_ABORTS_ATOM_LIMIT
+        .fetch_add(metrics.aborts_atom_limit as u64, Ordering::Relaxed);
+    BITWISE_FRONTIER_ABORTS_SIZE_LIMIT
+        .fetch_add(metrics.aborts_size_limit as u64, Ordering::Relaxed);
+    BITWISE_FRONTIER_MAX_ATOMS.fetch_max(metrics.max_frontier_atoms as u64, Ordering::Relaxed);
+    BITWISE_FRONTIER_NODE_DELTA.fetch_add(node_delta as i64, Ordering::Relaxed);
+    BITWISE_FRONTIER_COST_DELTA.fetch_add(cost_delta as i64, Ordering::Relaxed);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExprDomain {
+    Arithmetic,
+    Bitwise,
+}
+
+fn expr_domain(e: &Expr) -> Option<ExprDomain> {
+    match e {
+        Expr::Not(_) | Expr::And(_) | Expr::Or(_) | Expr::Xor(_) => Some(ExprDomain::Bitwise),
+        Expr::Scale(_, _) | Expr::Add(_) | Expr::Mul(_) => Some(ExprDomain::Arithmetic),
+        Expr::Var(_) | Expr::Const(_) => None,
+    }
+}
+
+fn arithmetic_bitwise_alternations(e: &Expr, parent: Option<ExprDomain>) -> usize {
+    let domain = expr_domain(e);
+    let alternation = usize::from(domain.is_some() && parent.is_some() && domain != parent);
+    let parent = domain.or(parent);
+
+    let children = match e {
+        Expr::Var(_) | Expr::Const(_) => 0,
+        Expr::Not(e) | Expr::Scale(_, e) => arithmetic_bitwise_alternations(e, parent),
+        Expr::And(es)
+        | Expr::Or(es)
+        | Expr::Xor(es)
+        | Expr::Add(es)
+        | Expr::Mul(es) => es
+            .iter()
+            .map(|e| arithmetic_bitwise_alternations(e, parent))
+            .sum(),
+    };
+
+    alternation + children
+}
+
+fn expr_cost(e: &Expr) -> ExprCost {
+    ExprCost {
+        arithmetic_bitwise_alternations: arithmetic_bitwise_alternations(e, None),
+        ast_nodes: e.size(),
+        printed_size: e.to_string().len(),
+    }
+}
 
 /// Why the solver could not simplify an expression.
 ///
@@ -473,6 +596,169 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             1 => terms.into_iter().next().unwrap(),
             _ => Expr::Add(terms),
         }
+    }
+
+    fn abstract_bitwise_frontier(
+        &self,
+        e: &Expr,
+        atoms: &mut Vec<Expr>,
+        atom_ids: &mut HashMap<Expr, VarId>,
+        metrics: &mut BitwiseFrontierMetrics,
+    ) -> Option<Expr> {
+        let map_terms = |terms: &[Expr],
+                         atoms: &mut Vec<Expr>,
+                         atom_ids: &mut HashMap<Expr, VarId>,
+                         metrics: &mut BitwiseFrontierMetrics| {
+            terms
+                .iter()
+                .map(|e| self.abstract_bitwise_frontier(e, atoms, atom_ids, metrics))
+                .collect::<Option<Vec<_>>>()
+        };
+
+        Some(match e {
+            Expr::Not(e) => !self.abstract_bitwise_frontier(e, atoms, atom_ids, metrics)?,
+            Expr::And(es) => Expr::And(map_terms(es, atoms, atom_ids, metrics)?),
+            Expr::Or(es) => Expr::Or(map_terms(es, atoms, atom_ids, metrics)?),
+            Expr::Xor(es) => Expr::Xor(map_terms(es, atoms, atom_ids, metrics)?),
+            Expr::Const(c) if is_bitwise_constant(*c, self.mask) => e.clone(),
+            _ => {
+                let key = e.clone().reduce(self.mask);
+                let id = if let Some(id) = atom_ids.get(&key) {
+                    *id
+                } else {
+                    if atoms.len() == MAX_FRONTIER_ATOMS {
+                        metrics.aborts_atom_limit += 1;
+                        return None;
+                    }
+
+                    let id = atoms.len().into();
+                    atoms.push(key.clone());
+                    atom_ids.insert(key, id);
+                    id
+                };
+                Expr::Var(id)
+            }
+        })
+    }
+
+    fn restore_frontier_atoms(&self, e: Expr, atoms: &[Expr]) -> Option<Expr> {
+        match e {
+            Expr::Var(v) => atoms.get(v.0).cloned(),
+            _ => e
+                .try_map(|e| self.restore_frontier_atoms(e, atoms).ok_or(()))
+                .ok(),
+        }
+    }
+
+    fn normalize_one_bitwise_frontier(
+        &self,
+        e: &Expr,
+        metrics: &mut BitwiseFrontierMetrics,
+    ) -> Option<Expr> {
+        metrics.attempts += 1;
+
+        let mut atoms = Vec::new();
+        let mut atom_ids = HashMap::new();
+        let abstracted = self.abstract_bitwise_frontier(
+            e,
+            &mut atoms,
+            &mut atom_ids,
+            metrics,
+        )?;
+        metrics.max_frontier_atoms = max(metrics.max_frontier_atoms, atoms.len());
+
+        if !atoms.iter().any(Expr::is_arithmetic) {
+            return None;
+        }
+
+        let signature_size = 1usize << atoms.len();
+        if signature_size > MAX_FRONTIER_SIGNATURE_SIZE {
+            metrics.aborts_atom_limit += 1;
+            return None;
+        }
+
+        let signature = self.calc_signature(&abstracted, atoms.len());
+        let normalized = self.make_conjunction_sum(signature, atoms.len());
+        let restored = self.restore_frontier_atoms(normalized, &atoms)?.reduce(self.mask);
+
+        if restored.size() > e.size().saturating_mul(MAX_TRANSFORMED_AST_FACTOR) {
+            metrics.aborts_size_limit += 1;
+            return None;
+        }
+
+        if restored == *e {
+            return None;
+        }
+
+        metrics.normalized += 1;
+        Some(restored)
+    }
+
+    fn rewrite_bitwise_frontiers(
+        &self,
+        e: &Expr,
+        metrics: &mut BitwiseFrontierMetrics,
+    ) -> Expr {
+        match e {
+            Expr::Not(_) | Expr::And(_) | Expr::Or(_) | Expr::Xor(_) => self
+                .normalize_one_bitwise_frontier(e, metrics)
+                .unwrap_or_else(|| e.clone()),
+            _ => e
+                .clone()
+                .map(|e| self.rewrite_bitwise_frontiers(&e, metrics)),
+        }
+    }
+
+    fn normalize_bitwise_frontier(&self, e: &Expr) -> Option<Expr> {
+        let mut metrics = BitwiseFrontierMetrics::default();
+        let rewritten = self.rewrite_bitwise_frontiers(e, &mut metrics);
+
+        if metrics.normalized == 0 {
+            record_bitwise_frontier_metrics(&metrics, false, 0, 0);
+            return None;
+        }
+
+        let candidate = rewritten.reduce(self.mask);
+        if candidate == *e {
+            record_bitwise_frontier_metrics(&metrics, false, 0, 0);
+            return None;
+        }
+
+        let original_cost = expr_cost(e);
+        let candidate_cost = expr_cost(&candidate);
+        let node_delta = candidate.size() as isize - e.size() as isize;
+        let cost_delta = candidate_cost.arithmetic_bitwise_alternations as isize
+            - original_cost.arithmetic_bitwise_alternations as isize;
+        let exceeds_size_budget =
+            candidate.size() > e.size().saturating_mul(MAX_TRANSFORMED_AST_FACTOR);
+
+        if exceeds_size_budget {
+            metrics.aborts_size_limit += 1;
+        }
+
+        let accepted = !exceeds_size_budget
+            && (candidate == Expr::zero() || candidate_cost < original_cost);
+        record_bitwise_frontier_metrics(
+            &metrics,
+            accepted,
+            if accepted { node_delta } else { 0 },
+            if accepted { cost_delta } else { 0 },
+        );
+
+        debug!(
+            "bitwise-frontier attempts={} normalized={} atom_aborts={} size_aborts={} max_atoms={} node_delta={} cost_delta={:?}->{:?} accepted={}",
+            metrics.attempts,
+            metrics.normalized,
+            metrics.aborts_atom_limit,
+            metrics.aborts_size_limit,
+            metrics.max_frontier_atoms,
+            node_delta,
+            original_cost,
+            candidate_cost,
+            accepted
+        );
+
+        accepted.then_some(candidate)
     }
 
     /// Solves a linear MBA
@@ -972,7 +1258,11 @@ pub fn simplify_mba_with_cache<C: LinearCache>(
     let mask = make_mask(n);
     let e = e.reduce(mask);
 
-    simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n))
+    simplify_to_fixed_point(e, |e| {
+        let frontier_solver = MBASolver::new(cache, &e, n);
+        let e = frontier_solver.normalize_bitwise_frontier(&e).unwrap_or(e);
+        simplify_mba_inner(cache, e, n)
+    })
 }
 
 #[cfg(test)]
@@ -1050,5 +1340,66 @@ mod tests {
 
         assert_eq!(calls.get(), MAX_SIMPLIFICATION_PASSES);
         assert_eq!(result, Expr::Var(0.into()));
+    }
+
+    #[test]
+    fn bitwise_frontier_normalizes_kernel_over_opaque_operands() {
+        let a = Expr::Var(0.into()) + Expr::Var(1.into());
+        let b = Expr::Var(2.into()) * Expr::Var(3.into());
+        let kernel = (a.clone() & b.clone()) * (a.clone() | b.clone())
+            + (a.clone() & !b.clone()) * (!a.clone() & b.clone())
+            - a * b;
+        let cache = LocalCache::new();
+        let solver = MBASolver::new(&cache, &kernel, 64);
+
+        assert_eq!(solver.normalize_bitwise_frontier(&kernel), Some(Expr::zero()));
+    }
+
+    #[test]
+    fn bitwise_frontier_deduplicates_structurally_equal_atoms() {
+        let atom = Expr::Var(0.into()) + Expr::Var(1.into());
+        let frontier = atom.clone() | atom.clone();
+        let cache = LocalCache::new();
+        let solver = MBASolver::new(&cache, &frontier, 64);
+        let mut metrics = BitwiseFrontierMetrics::default();
+
+        let normalized = solver
+            .normalize_one_bitwise_frontier(&frontier, &mut metrics)
+            .unwrap();
+
+        assert_eq!(normalized, atom);
+        assert_eq!(metrics.max_frontier_atoms, 1);
+    }
+
+    #[test]
+    fn bitwise_frontier_aborts_above_four_atoms() {
+        let atoms = (0..=MAX_FRONTIER_ATOMS)
+            .map(|i| Expr::Var(i.into()) * Expr::Var((i + MAX_FRONTIER_ATOMS + 1).into()))
+            .collect();
+        let frontier = Expr::Or(atoms);
+        let cache = LocalCache::new();
+        let solver = MBASolver::new(&cache, &frontier, 64);
+        let mut metrics = BitwiseFrontierMetrics::default();
+
+        assert_eq!(
+            solver.normalize_one_bitwise_frontier(&frontier, &mut metrics),
+            None
+        );
+        assert_eq!(metrics.aborts_atom_limit, 1);
+    }
+
+    #[test]
+    fn bitwise_frontier_keeps_partial_word_constants_opaque() {
+        let frontier = (Expr::Var(0.into()) + Expr::Var(1.into())) & Expr::make_const(1);
+        let cache = LocalCache::new();
+        let solver = MBASolver::new(&cache, &frontier, 64);
+        let mut metrics = BitwiseFrontierMetrics::default();
+
+        let normalized = solver
+            .normalize_one_bitwise_frontier(&frontier, &mut metrics)
+            .unwrap();
+
+        assert_eq!(normalized, frontier.clone().reduce(make_mask(64)));
+        assert_eq!(metrics.max_frontier_atoms, 2);
     }
 }
