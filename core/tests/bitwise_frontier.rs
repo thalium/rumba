@@ -5,10 +5,12 @@ use rumba_core::{
     parser::parse_expr,
     simplify::{
         CertifiedSemanticAlias, ComplementRelationProof, DirectComplementExperiment,
+        ExpectedBitwiseDependency, ExpectedDependencyExperiment,
         GuidedSemanticAliasExperiment, GuidedTernaryExperiment, SemanticAlias,
-        diagnose_hidden_atoms,
+        SemanticAliasProof, diagnose_hidden_atoms,
         experiment_direct_complement_relation, experiment_guided_semantic_aliases,
-        experiment_guided_ternary_relations, simplify_mba,
+        experiment_expected_bitwise_dependency, experiment_guided_ternary_relations,
+        simplify_mba,
     },
 };
 
@@ -180,6 +182,84 @@ fn p7f_micro_finds_no_guided_ternary_relation_on_qsynth_line_260() {
         experiment.residual_after_binary_aliases
     );
     assert_ne!(experiment.simplified_after_substitution, Expr::zero());
+}
+
+fn qsynth_expected_dependency_experiment(
+    line: usize,
+    target: usize,
+    candidate: Expr,
+    initial_aliases: &[CertifiedSemanticAlias],
+) -> ExpectedDependencyExperiment {
+    let (mba, ground_truth) = qsynth_case(line);
+    let simplified_mba = simplify_mba(mba, BIT_COUNT).unwrap();
+    let simplified_ground_truth = simplify_mba(ground_truth, BIT_COUNT).unwrap();
+    let (residual, trace) = diagnose_hidden_atoms(
+        simplified_ground_truth - simplified_mba,
+        BIT_COUNT,
+    )
+    .unwrap();
+    let scope = trace
+        .iter()
+        .find(|scope| scope.input == residual)
+        .expect("missing final residual scope");
+    let dependency = ExpectedBitwiseDependency {
+        line,
+        target: target.into(),
+        candidate,
+    };
+
+    experiment_expected_bitwise_dependency(scope, &dependency, initial_aliases)
+        .unwrap()
+        .expect("expected target is absent from final scope")
+}
+
+#[test]
+fn p7e_micro_certifies_qsynth_53_binary_nor_dependency() {
+    let experiment = qsynth_expected_dependency_experiment(
+        53,
+        7,
+        !(var(2) | var(6)),
+        &[],
+    );
+
+    assert_eq!(experiment.proof, SemanticAliasProof::Proved);
+    assert_eq!(
+        experiment.simplified_after_substitution,
+        Some(Expr::zero())
+    );
+}
+
+#[test]
+fn p7e_micro_certifies_qsynth_249_binary_xor_dependency() {
+    let experiment = qsynth_expected_dependency_experiment(
+        249,
+        4,
+        var(1) ^ var(3),
+        &[],
+    );
+
+    assert_eq!(experiment.proof, SemanticAliasProof::Proved);
+    assert_eq!(
+        experiment.simplified_after_substitution,
+        Some(Expr::zero())
+    );
+}
+
+#[test]
+fn p7e_micro_certifies_qsynth_260_binary_nor_dependency() {
+    let aliases = qsynth_guided_alias_experiment(260).certified_aliases;
+    let experiment = qsynth_expected_dependency_experiment(
+        260,
+        10,
+        !(var(0) | var(8)),
+        &aliases,
+    );
+
+    assert_eq!(experiment.proof, SemanticAliasProof::Proved);
+    assert_eq!(
+        experiment.simplified_after_substitution,
+        Some(Expr::zero())
+    );
 }
 
 #[test]

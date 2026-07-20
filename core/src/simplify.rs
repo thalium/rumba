@@ -1060,6 +1060,157 @@ pub fn experiment_guided_ternary_relations(
     }))
 }
 
+/// One P7e-micro dependency predicted from a specific residual structure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpectedBitwiseDependency {
+    pub line: usize,
+    pub target: VarId,
+    pub candidate: Expr,
+}
+
+/// Exact diagnosis of one predicted word-level dependency.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpectedDependencyExperiment {
+    pub line: usize,
+    pub scope: usize,
+    pub target: VarId,
+    pub target_definition: Expr,
+    pub candidate: Expr,
+    pub expanded_candidate: Expr,
+    pub relation: Expr,
+    pub proof: SemanticAliasProof,
+    pub initial_aliases: Vec<CertifiedSemanticAlias>,
+    pub substituted_pre_restore: Option<Expr>,
+    pub restored_after_substitution: Option<Expr>,
+    pub simplified_after_substitution: Option<Expr>,
+}
+
+fn expand_scope_hidden_atoms(
+    expression: Expr,
+    atoms: &HashMap<VarId, &HiddenAtomTrace>,
+) -> Expr {
+    match expression {
+        Expr::Var(atom) => atoms
+            .get(&atom)
+            .map(|trace| trace.simplified.clone())
+            .unwrap_or(Expr::Var(atom)),
+        expression => expression.map(|child| {
+            expand_scope_hidden_atoms(child, atoms)
+        }),
+    }
+}
+
+/// Certify one explicitly predicted dependency. This P7e-micro entry point
+/// intentionally performs no candidate enumeration.
+pub fn experiment_expected_bitwise_dependency(
+    scope: &HiddenScopeTrace,
+    dependency: &ExpectedBitwiseDependency,
+    initial_aliases: &[CertifiedSemanticAlias],
+) -> Result<Option<ExpectedDependencyExperiment>, SolveError> {
+    let Some(pre_restore_result) = &scope.pre_restore_result else {
+        return Ok(None);
+    };
+    let atoms: HashMap<_, _> = scope.atoms.iter().map(|atom| (atom.atom, atom)).collect();
+    let Some(target) = atoms.get(&dependency.target) else {
+        return Ok(None);
+    };
+    let initial_replacements: HashMap<_, _> = initial_aliases
+        .iter()
+        .map(|alias| {
+            let representative = Expr::Var(alias.left);
+            let replacement = match alias.alias {
+                SemanticAlias::Equal => representative,
+                SemanticAlias::Complement => !representative,
+                SemanticAlias::ArithmeticOpposite => -representative,
+            };
+            (alias.right, replacement)
+        })
+        .collect();
+    let target_definition = if initial_aliases.is_empty() {
+        target.simplified.clone()
+    } else {
+        let definition = target
+            .dependency_definition
+            .clone()
+            .unwrap_or_else(|| target.simplified.clone());
+        expand_scope_hidden_atoms(
+            replace_vars_simultaneously(definition, &initial_replacements),
+            &atoms,
+        )
+    };
+    let expanded_candidate = expand_scope_hidden_atoms(
+        replace_vars_simultaneously(
+            dependency.candidate.clone(),
+            &initial_replacements,
+        ),
+        &atoms,
+    );
+    let relation = (target_definition.clone() - expanded_candidate.clone())
+        .reduce(make_mask(scope.bit_width));
+    let cache = LocalCache::new();
+    let (
+        proof,
+        substituted_pre_restore,
+        restored_after_substitution,
+        simplified_after_substitution,
+    ) =
+        match simplify_mba_with_cache(&cache, relation.clone(), scope.bit_width) {
+            Ok(residual) if residual == Expr::zero() => {
+                let mut replacements = initial_replacements.clone();
+                replacements.insert(
+                    dependency.target,
+                    dependency.candidate.clone(),
+                );
+                let substituted = replace_vars_simultaneously(
+                    pre_restore_result.clone(),
+                    &replacements,
+                );
+                let restored = expand_scope_hidden_atoms(
+                    substituted.clone(),
+                    &atoms,
+                );
+                let simplified = simplify_mba_with_cache(
+                    &cache,
+                    restored.clone(),
+                    scope.bit_width,
+                )?;
+                (
+                    SemanticAliasProof::Proved,
+                    Some(substituted),
+                    Some(restored),
+                    Some(simplified),
+                )
+            }
+            Ok(residual) => (
+                SemanticAliasProof::NotProved { residual },
+                None,
+                None,
+                None,
+            ),
+            Err(error) => (
+                SemanticAliasProof::ProofError(error),
+                None,
+                None,
+                None,
+            ),
+        };
+
+    Ok(Some(ExpectedDependencyExperiment {
+        line: dependency.line,
+        scope: scope.scope,
+        target: dependency.target,
+        target_definition,
+        candidate: dependency.candidate.clone(),
+        expanded_candidate,
+        relation,
+        proof,
+        initial_aliases: initial_aliases.to_vec(),
+        substituted_pre_restore,
+        restored_after_substitution,
+        simplified_after_substitution,
+    }))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ExprCost {
     arithmetic_bitwise_alternations: usize,
@@ -2919,5 +3070,47 @@ mod tests {
             GuidedTernaryRelation::OneMinusTwo
         );
         assert_eq!(experiment.simplified_after_substitution, Expr::zero());
+    }
+
+    #[test]
+    fn expected_dependency_experiment_does_not_substitute_unproved_candidate() {
+        let target: VarId = 2.into();
+        let pre_restore = Expr::Var(target);
+        let scope = HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore),
+            atoms: vec![HiddenAtomTrace {
+                atom: target,
+                original: Expr::Var(0.into()),
+                simplified: Expr::Var(0.into()),
+                free_atoms: vec![0.into()],
+                dependent_atoms: Vec::new(),
+                dependency_definition: None,
+                dependency_kind: HiddenAtomDependencyKind::Root,
+            }],
+        };
+        let dependency = ExpectedBitwiseDependency {
+            line: 0,
+            target,
+            candidate: Expr::Var(1.into()),
+        };
+
+        let experiment = experiment_expected_bitwise_dependency(
+            &scope,
+            &dependency,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(matches!(
+            experiment.proof,
+            SemanticAliasProof::NotProved { .. }
+        ));
+        assert_eq!(experiment.substituted_pre_restore, None);
+        assert_eq!(experiment.restored_after_substitution, None);
+        assert_eq!(experiment.simplified_after_substitution, None);
     }
 }

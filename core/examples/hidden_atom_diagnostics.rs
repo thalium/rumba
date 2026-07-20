@@ -4,10 +4,11 @@ use rumba_core::{
     expr::Expr,
     parser::parse_expr,
     simplify::{
-        ComplementRelationProof, DirectDependencyRejectReason, HiddenAtomDependencyKind,
-        HiddenScopeTrace, SemanticAliasProof, diagnose_hidden_atoms,
+        ComplementRelationProof, DirectDependencyRejectReason, ExpectedBitwiseDependency,
+        HiddenAtomDependencyKind, HiddenScopeTrace, SemanticAliasProof, diagnose_hidden_atoms,
         experiment_direct_bitwise_dependencies, experiment_direct_complement_relation,
-        experiment_guided_semantic_aliases, experiment_guided_ternary_relations,
+        experiment_expected_bitwise_dependency, experiment_guided_semantic_aliases,
+        experiment_guided_ternary_relations,
     },
 };
 
@@ -252,6 +253,79 @@ fn main() {
                             attempt.alias,
                             attempt.proof,
                             attempt.relation,
+                        );
+                    }
+                }
+
+                let expected_dependency = match line {
+                    53 => Some(ExpectedBitwiseDependency {
+                        line,
+                        target: 7.into(),
+                        candidate: !(Expr::Var(2.into()) | Expr::Var(6.into())),
+                    }),
+                    249 => Some(ExpectedBitwiseDependency {
+                        line,
+                        target: 4.into(),
+                        candidate: Expr::Var(1.into()) ^ Expr::Var(3.into()),
+                    }),
+                    260 => Some(ExpectedBitwiseDependency {
+                        line,
+                        target: 10.into(),
+                        candidate: !(Expr::Var(0.into()) | Expr::Var(8.into())),
+                    }),
+                    _ => None,
+                };
+                if let Some(dependency) = expected_dependency {
+                    let Some(expected) = experiment_expected_bitwise_dependency(
+                        scope,
+                        &dependency,
+                        &experiment.certified_aliases,
+                    )
+                    .unwrap_or_else(|err| {
+                        panic!("P7e-micro failed in scope {}: {err}", scope.scope)
+                    })
+                    else {
+                        continue;
+                    };
+                    let proof = match &expected.proof {
+                        SemanticAliasProof::Proved => "proved",
+                        SemanticAliasProof::NotProved { .. } => "not_proved",
+                        SemanticAliasProof::ProofError(_) => "proof_error",
+                    };
+                    let result_nodes = expected
+                        .simplified_after_substitution
+                        .as_ref()
+                        .map(Expr::size);
+                    let residual_zero = expected
+                        .simplified_after_substitution
+                        .as_ref()
+                        .is_some_and(|result| *result == Expr::zero());
+                    println!(
+                        "p7e_micro line={} scope={} target=v{} candidate={} proof={} initial_aliases={} result_nodes={:?} residual_zero={}",
+                        line,
+                        expected.scope,
+                        expected.target,
+                        expected.candidate,
+                        proof,
+                        expected.initial_aliases.len(),
+                        result_nodes,
+                        residual_zero,
+                    );
+                    if verbose {
+                        println!("  target_definition={}", expected.target_definition);
+                        println!("  expanded_candidate={}", expected.expanded_candidate);
+                        println!("  relation={}", expected.relation);
+                        println!(
+                            "  substituted_pre_restore={:?}",
+                            expected.substituted_pre_restore
+                        );
+                        println!(
+                            "  restored_after_substitution={:?}",
+                            expected.restored_after_substitution
+                        );
+                        println!(
+                            "  simplified_after_substitution={:?}",
+                            expected.simplified_after_substitution
                         );
                     }
                 }
