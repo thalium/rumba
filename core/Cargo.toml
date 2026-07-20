@@ -24,6 +24,11 @@ name = "bench"
 harness = false
 path = "benches/bench.rs"
 
+[[bench]]
+name = "cache"
+harness = false
+path = "benches/cache.rs"
+
 [features]
 parse = ["pest", "pest_derive"]
 jit = ["cranelift", "memmap2", "target-lexicon"]

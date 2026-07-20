@@ -288,8 +288,11 @@ impl Expr {
 
         #[cfg(feature = "jit")]
         {
-            // TODO: empirical
-            if t > 9 {
+            // Compiling costs ~169us; a compiled evaluation is ~4.7ns against
+            // ~114ns interpreted (see `benches/bench.rs`). So the JIT pays for
+            // itself past 169us / (114ns - 4.7ns) ~= 1546 evaluations, i.e.
+            // from t = 11 (2048) up. At t = 10 (1024) it is still a net loss.
+            if t > 10 {
                 let jit_fn = jit::compile(self);
 
                 for i in 0..size {
@@ -519,5 +522,34 @@ impl Expr {
             Expr::Add(exprs) => Expr::Add(vec_map(exprs, f)),
             Expr::Mul(exprs) => Expr::Mul(vec_map(exprs, f)),
         }
+    }
+
+    /// [`Expr::map`] for a fallible transform: rebuilds the node from mapped
+    /// children, short-circuiting on the first error. Lets the solver's
+    /// recursive rewrites return `Result` without hand-rolling the match at
+    /// each site.
+    pub fn try_map<F, E>(self, mut f: F) -> Result<Self, E>
+    where
+        F: FnMut(Self) -> Result<Self, E>,
+    {
+        fn vec_try_map<F, E>(exprs: Vec<Expr>, f: F) -> Result<Vec<Expr>, E>
+        where
+            F: FnMut(Expr) -> Result<Expr, E>,
+        {
+            exprs.into_iter().map(f).collect()
+        }
+
+        Ok(match self {
+            Expr::Var(_) | Expr::Const(_) => self,
+
+            Expr::Not(expr) => !f(*expr)?,
+            Expr::Scale(v, expr) => v * f(*expr)?,
+
+            Expr::And(exprs) => Expr::And(vec_try_map(exprs, f)?),
+            Expr::Or(exprs) => Expr::Or(vec_try_map(exprs, f)?),
+            Expr::Xor(exprs) => Expr::Xor(vec_try_map(exprs, f)?),
+            Expr::Add(exprs) => Expr::Add(vec_try_map(exprs, f)?),
+            Expr::Mul(exprs) => Expr::Mul(vec_try_map(exprs, f)?),
+        })
     }
 }

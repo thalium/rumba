@@ -64,6 +64,15 @@ impl Experiment {
         let simplified_mba = simplify::simplify_mba(self.mba.clone(), BIT_COUNT);
         let elapsed = start.elapsed();
 
+        // The solver rejected this expression outright. Score it as a miss
+        // rather than aborting the whole corpus run.
+        let Ok(simplified_mba) = simplified_mba else {
+            return ExperimentResult {
+                elapsed,
+                status: Status::NG,
+            };
+        };
+
         if let Err((_, v1, v2)) = simplified_mba.sem_equal(&self.gt, MASK, SEMANTIC_TEST_COUNT) {
             assert_eq!(
                 v1, v2,
@@ -72,14 +81,19 @@ impl Experiment {
             );
         }
 
-        let simplified_gt = simplify::simplify_mba(self.gt.clone(), BIT_COUNT);
+        let Ok(simplified_gt) = simplify::simplify_mba(self.gt.clone(), BIT_COUNT) else {
+            return ExperimentResult {
+                elapsed,
+                status: Status::NG,
+            };
+        };
 
         let mut status = Status::NG;
 
         if simplified_mba == simplified_gt {
             status = Status::Ok;
         } else if simplify::simplify_mba(simplified_gt - simplified_mba.clone(), BIT_COUNT)
-            == Expr::zero()
+            == Ok(Expr::zero())
         {
             status = Status::OkZ;
         } else {

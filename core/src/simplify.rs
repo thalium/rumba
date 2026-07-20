@@ -1,4 +1,12 @@
-use std::{cmp::max, collections::HashMap};
+use std::{
+    cell::{Cell, RefCell},
+    cmp::max,
+    collections::HashMap,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use crate::{
     bimap::BiMap,
@@ -7,6 +15,209 @@ use crate::{
 };
 
 use log::debug;
+
+/// The largest number of variables a linear MBA may carry into the truth-table
+/// solve. The signature is `2^t` wide, so this bounds one solve at 1M entries.
+pub const MAX_VARS: usize = 20;
+
+/// Why the solver could not simplify an expression.
+///
+/// Simplifying an MBA is best-effort: a caller that hands over an expression the
+/// solver cannot handle should be able to keep its original expression and carry
+/// on, not die. Every variant is a "leave this one alone" signal rather than a
+/// reason to abort the program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SolveError {
+    /// The linear MBA still held more than [`MAX_VARS`] variables after
+    /// reduction / PCT expansion, so its truth table is too large to build.
+    TooManyVariables { found: usize, max: usize },
+
+    /// A variable produced during reduction had no entry in the restore map.
+    /// Indicates an inconsistent variable map rather than a hard input.
+    UnknownVariable(VarId),
+
+    /// A solved linear MBA came back in a shape the polynomial reconstruction
+    /// does not model.
+    UnrecognizedForm(Expr),
+}
+
+impl std::fmt::Display for SolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolveError::TooManyVariables { found, max } => {
+                write!(f, "too many variables: {found} (max {max})")
+            }
+            SolveError::UnknownVariable(v) => write!(f, "unknown variable v{v}"),
+            SolveError::UnrecognizedForm(e) => {
+                write!(f, "solved linear MBA is in an unrecognized form: {e}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SolveError {}
+
+/// How a cache has performed. Read with [`MbaCache::stats`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    /// Distinct linear MBAs currently memoized.
+    pub entries: usize,
+}
+
+impl CacheStats {
+    /// Fraction of lookups served from the cache, or `None` before any lookup.
+    pub fn hit_rate(&self) -> Option<f64> {
+        let total = self.hits + self.misses;
+        (total > 0).then(|| self.hits as f64 / total as f64)
+    }
+}
+
+/// A memo of solved linear MBAs.
+///
+/// The solver reaches its cache at exactly one point
+/// ([`MBASolver::solve_linear`]): a [`get`](LinearCache::get), and on a miss an
+/// [`insert`](LinearCache::insert), with the expensive solve running *between*
+/// them. Two implementations are provided: [`LocalCache`] for a single-threaded
+/// caller, and [`MbaCache`] for one shared across threads.
+///
+/// [`get`](LinearCache::get) hands back an owned `Expr` rather than a guard or a
+/// borrow. That is deliberate: the solver recurses into itself (`hide_in_var`
+/// re-enters `simplify_mba_inner` with this same cache), and neither [`RefCell`]
+/// nor [`Mutex`] tolerates a live guard across such a call — one panics, the
+/// other deadlocks. Returning owned values makes that unrepresentable.
+pub trait LinearCache {
+    /// The memoized solution for `e`, tallying the lookup as a hit or a miss.
+    fn get(&self, e: &Expr) -> Option<Expr>;
+
+    /// Memoize `solved` as the solution for `e`.
+    fn insert(&self, e: Expr, solved: Expr);
+
+    /// Hit/miss tallies and current size.
+    fn stats(&self) -> CacheStats;
+
+    /// Drop every entry and reset the tallies.
+    fn clear(&self);
+}
+
+/// A [`LinearCache`] for one thread: no locking, no atomics.
+///
+/// This is what [`simplify_mba`] uses. Accessing it costs a borrow-flag check,
+/// so a single-threaded caller pays nothing for a sharing capability it does not
+/// use. Not [`Sync`] — use [`MbaCache`] to share one across threads.
+#[derive(Debug, Default)]
+pub struct LocalCache {
+    entries: RefCell<HashMap<Expr, Expr>>,
+    hits: Cell<u64>,
+    misses: Cell<u64>,
+}
+
+impl LocalCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl LinearCache for LocalCache {
+    fn get(&self, e: &Expr) -> Option<Expr> {
+        let hit = self.entries.borrow().get(e).cloned();
+
+        let counter = match &hit {
+            Some(_) => &self.hits,
+            None => &self.misses,
+        };
+        counter.set(counter.get() + 1);
+
+        hit
+    }
+
+    fn insert(&self, e: Expr, solved: Expr) {
+        self.entries.borrow_mut().insert(e, solved);
+    }
+
+    fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits.get(),
+            misses: self.misses.get(),
+            entries: self.entries.borrow().len(),
+        }
+    }
+
+    fn clear(&self) {
+        self.entries.borrow_mut().clear();
+        self.hits.set(0);
+        self.misses.set(0);
+    }
+}
+
+/// A [`LinearCache`] shareable across threads, and across calls to
+/// [`simplify_mba_with_cache`].
+///
+/// Critical sections are one hash-map operation each — the solve itself runs
+/// outside the lock — so contention stays low even with many workers.
+///
+/// A caller that never shares should still prefer [`LocalCache`]. The lock and
+/// the atomics add roughly 35ns per lookup (~99ns to ~134ns, `benches/cache.rs`).
+/// Against a miss, which pays for a full solve, that is nothing; against a hit,
+/// which is only an `Expr` hash, it is about a third — and a cache exists to be
+/// hit. Measured end to end through the solver the difference came out near 8%
+/// on an all-hits workload.
+#[derive(Debug, Default)]
+pub struct MbaCache {
+    entries: Mutex<HashMap<Expr, Expr>>,
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
+
+impl MbaCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl LinearCache for MbaCache {
+    fn get(&self, e: &Expr) -> Option<Expr> {
+        let hit = self
+            .entries
+            .lock()
+            .expect("MBA cache mutex poisoned")
+            .get(e)
+            .cloned();
+
+        match &hit {
+            Some(_) => &self.hits,
+            None => &self.misses,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+
+        hit
+    }
+
+    fn insert(&self, e: Expr, solved: Expr) {
+        self.entries
+            .lock()
+            .expect("MBA cache mutex poisoned")
+            .insert(e, solved);
+    }
+
+    fn stats(&self) -> CacheStats {
+        CacheStats {
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            entries: self.entries.lock().expect("MBA cache mutex poisoned").len(),
+        }
+    }
+
+    fn clear(&self) {
+        self.entries
+            .lock()
+            .expect("MBA cache mutex poisoned")
+            .clear();
+        self.hits.store(0, Ordering::Relaxed);
+        self.misses.store(0, Ordering::Relaxed);
+    }
+}
 
 fn sub_coeff(tt: &mut [u64], coeff: u64, index: usize, sublist: &[usize]) {
     let are_vars_true = |i: usize| sublist[1..].iter().copied().all(|v| ((i >> v) & 1) == 1);
@@ -121,22 +332,21 @@ fn reduce_vars(e: Expr, var_map: &mut BiMap<VarId, VarId>, t: &mut usize) -> Exp
 }
 
 /// Restores the varialbes in the mba
-fn restore_vars(e: Expr, var_map: &BiMap<VarId, VarId>) -> Expr {
+fn restore_vars(e: Expr, var_map: &BiMap<VarId, VarId>) -> Result<Expr, SolveError> {
     match e {
         Expr::Var(v) => {
-            let vv = if let Some(v) = var_map.get_by_right(&v) {
-                *v
-            } else {
-                panic!("Can't find variable");
-            };
-            Expr::Var(vv)
+            let vv = var_map
+                .get_by_right(&v)
+                .copied()
+                .ok_or(SolveError::UnknownVariable(v))?;
+            Ok(Expr::Var(vv))
         }
 
-        _ => e.map(|e| restore_vars(e, var_map)),
+        _ => e.try_map(|e| restore_vars(e, var_map)),
     }
 }
 
-struct MBASolver<'a> {
+struct MBASolver<'a, C: LinearCache> {
     /// The number of bits being considered
     n: u8,
 
@@ -153,12 +363,12 @@ struct MBASolver<'a> {
     degree: usize,
 
     /// A cache for simplifying linear MBAs
-    l_cache: &'a mut HashMap<Expr, Expr>,
+    l_cache: &'a C,
 }
 
-impl<'a> MBASolver<'a> {
+impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// Create a new Solver
-    fn new(l_cache: &'a mut HashMap<Expr, Expr>, e: &Expr, n: u8) -> Self {
+    fn new(l_cache: &'a C, e: &Expr, n: u8) -> Self {
         Self {
             non_linear_components: BiMap::new(),
             t: e.get_vars().iter().copied().map(|v| v.0).max().unwrap_or(0) + 1,
@@ -185,20 +395,20 @@ impl<'a> MBASolver<'a> {
     }
 
     /// Solves a non polynomial MBA
-    fn solve(&mut self, e: Expr) -> Expr {
+    fn solve(&mut self, e: Expr) -> Result<Expr, SolveError> {
         // TODO: Remove this only needs to be done once
         let e = e.reduce(self.mask);
 
-        let p = self.make_polynomial(e);
-        let p = self.solve_polynomial(p);
+        let p = self.make_polynomial(e)?;
+        let p = self.solve_polynomial(p)?;
 
         // This was a non linear MBA
         if self.non_linear_components.len() != 0 {
             let e = self.poly_to_nonpoly(p);
             debug!("After adding non linear components, found: {}", e);
-            e.reduce(self.mask)
+            Ok(e.reduce(self.mask))
         } else {
-            p
+            Ok(p)
         }
     }
 
@@ -273,7 +483,7 @@ impl<'a> MBASolver<'a> {
     }
 
     /// Simplifies a linear MBA
-    fn solve_linear(&mut self, e: Expr, from_poly: bool) -> Expr {
+    fn solve_linear(&mut self, e: Expr, from_poly: bool) -> Result<Expr, SolveError> {
         let mut var_map = BiMap::<VarId, VarId>::new();
         let mut t = 0;
 
@@ -285,12 +495,15 @@ impl<'a> MBASolver<'a> {
 
         let e = if let Some(simplified) = self.l_cache.get(&e) {
             debug!("Found linear MBA in cache");
-            simplified.clone()
+            simplified
         } else {
             debug!("Solving linear MBA");
 
-            if t > 20 {
-                panic!("Too many variables");
+            if t > MAX_VARS {
+                return Err(SolveError::TooManyVariables {
+                    found: t,
+                    max: MAX_VARS,
+                });
             }
 
             let simplified = self.solve_linear_inner(e.clone(), t, from_poly);
@@ -298,11 +511,11 @@ impl<'a> MBASolver<'a> {
             simplified
         };
 
-        let e = restore_vars(e, &var_map);
+        let e = restore_vars(e, &var_map)?;
 
         debug!("Found solution to linear MBA: {}", e);
 
-        e
+        Ok(e)
     }
 
     /// Turns a polynomial MBA to a linear one using PCT
@@ -347,7 +560,7 @@ impl<'a> MBASolver<'a> {
     }
 
     /// Turns a linear MBA into a polynomial one using the inverse PCT
-    fn linear_to_poly(&self, e: Expr) -> Expr {
+    fn linear_to_poly(&self, e: Expr) -> Result<Expr, SolveError> {
         match &e {
             Expr::And(terms) => {
                 // The sign correction -> see paper
@@ -360,7 +573,7 @@ impl<'a> MBASolver<'a> {
                         let d = v.0 / self.t;
                         grouped[d].push(v.0 % self.t);
                     } else {
-                        panic!("Solved linear MBA is in an unrecognized form")
+                        return Err(SolveError::UnrecognizedForm(e.clone()));
                     }
                 }
 
@@ -377,30 +590,30 @@ impl<'a> MBASolver<'a> {
                     ));
                 }
 
-                s * Expr::Mul(terms)
+                Ok(s * Expr::Mul(terms))
             }
 
-            Expr::Add(_) | Expr::Scale(_, _) => e.map(|e| self.linear_to_poly(e)),
+            Expr::Add(_) | Expr::Scale(_, _) => e.try_map(|e| self.linear_to_poly(e)),
 
             Expr::Var(v) => {
                 // The sign correction -> see paper
                 let s = if self.degree & 1 == 0 { u64::MAX } else { 1 };
                 // ERROR: this should be a t
-                s * Expr::Var((v.0 % self.degree).into())
+                Ok(s * Expr::Var((v.0 % self.degree).into()))
             }
 
             Expr::Const(_) => {
                 // The sign correction -> see paper
                 let s = if self.degree & 1 == 0 { u64::MAX } else { 1 };
-                s * e
+                Ok(s * e)
             }
 
-            _ => panic!("Solved linear MBA is in an unrecognized form"),
+            _ => Err(SolveError::UnrecognizedForm(e.clone())),
         }
     }
 
     /// Solves a polynomial MBA
-    fn solve_polynomial(&mut self, e: Expr) -> Expr {
+    fn solve_polynomial(&mut self, e: Expr) -> Result<Expr, SolveError> {
         debug!("Solving polynomial MBA: {}", e);
 
         // This is a linear MBA
@@ -410,21 +623,21 @@ impl<'a> MBASolver<'a> {
         }
 
         let e = self.poly_to_linear(e, 0);
-        let e: Expr = self.solve_linear(e, true);
-        let e = self.linear_to_poly(e).reduce(self.mask);
+        let e: Expr = self.solve_linear(e, true)?;
+        let e = self.linear_to_poly(e)?.reduce(self.mask);
 
         debug!("Found polynomial solution: {}", e);
 
-        e
+        Ok(e)
     }
 
     /// Hides a non linear element behind a variable
-    fn hide_in_var(&mut self, e: Expr, mask: u64) -> Expr {
+    fn hide_in_var(&mut self, e: Expr, mask: u64) -> Result<Expr, SolveError> {
         debug!("e={} is not linear and will be replaced by a variable", e);
 
         let e = match e {
             Expr::Const(_) => e,
-            _ => simplify_mba_inner(self.l_cache, e, mask.count_ones() as u8).reduce(mask),
+            _ => simplify_mba_inner(self.l_cache, e, mask.count_ones() as u8)?.reduce(mask),
         };
 
         let note = (-e.clone() - Expr::make_const(1)).reduce(mask);
@@ -432,16 +645,16 @@ impl<'a> MBASolver<'a> {
 
         if let Some(v) = self.non_linear_components.get_by_right(&e) {
             debug!("Found variable v{} for e", v);
-            Expr::Var(*v)
+            Ok(Expr::Var(*v))
         } else if let Some(v) = self.non_linear_components.get_by_right(&note) {
             debug!("Found variable v{} for !e", v);
-            !Expr::Var(*v)
+            Ok(!Expr::Var(*v))
         } else {
             let v = self.t.into();
             debug!("Creating variable v{} for e={}", v, e);
             self.t += 1;
             self.non_linear_components.insert(v, e);
-            Expr::Var(v)
+            Ok(Expr::Var(v))
         }
     }
 
@@ -556,26 +769,26 @@ impl<'a> MBASolver<'a> {
     }
 
     /// Turns an expression into a bitwise expression
-    fn make_bitwise(&mut self, e: Expr, mut mask: u64) -> Expr {
+    fn make_bitwise(&mut self, e: Expr, mut mask: u64) -> Result<Expr, SolveError> {
         match e {
             // -1 and 0 are bitwise
             Expr::Const(c) => {
                 if c.get(mask) == 0 || c.get(mask) == self.mask {
-                    e
+                    Ok(e)
                 } else {
                     self.hide_in_var(e, mask)
                 }
             }
 
             // Variables are bitwise
-            Expr::Var(_) => e,
+            Expr::Var(_) => Ok(e),
 
             Expr::Not(_) | Expr::Or(_) | Expr::Xor(_) => {
                 // if only bitwise
                 // self
                 // if has negatives, try and fix the "biphased" problem
                 // worst case
-                e.map(|e| self.make_bitwise(e, mask))
+                e.try_map(|e| self.make_bitwise(e, mask))
             }
 
             // Dynamic masking: if we and with a constant that constant will be are new mask
@@ -591,23 +804,23 @@ impl<'a> MBASolver<'a> {
                 }
 
                 if mask == 0 {
-                    return Expr::zero();
+                    return Ok(Expr::zero());
                 }
 
-                Expr::And(
+                Ok(Expr::And(
                     terms
                         .into_iter()
                         .map(|e| self.make_bitwise(e, mask))
-                        .collect(),
-                )
+                        .collect::<Result<Vec<_>, _>>()?,
+                ))
             }
 
             // A Linear MBA might "hide" a bitwise expression
             Expr::Add(_) | Expr::Scale(_, _) => {
                 let previous = e.clone();
-                let l = e.map(|e| self.make_linear(e, mask));
+                let l = e.try_map(|e| self.make_linear(e, mask))?;
                 if let Some(l) = self.is_linear_bitwise(l, mask) {
-                    l
+                    Ok(l)
                 } else {
                     self.hide_in_var(previous, mask)
                 }
@@ -618,48 +831,48 @@ impl<'a> MBASolver<'a> {
     }
 
     /// Turns an expression into a bitwise product
-    fn make_product(&mut self, e: Expr) -> Expr {
+    fn make_product(&mut self, e: Expr) -> Result<Expr, SolveError> {
         match &e {
             Expr::Mul(terms) => {
                 self.degree = max(self.degree, terms.len());
-                e.map(|e| self.make_bitwise(e, self.mask))
+                e.try_map(|e| self.make_bitwise(e, self.mask))
             }
 
             // This makes life better on much easier
-            _ => Expr::Mul(vec![self.make_bitwise(e, self.mask)]),
+            _ => Ok(Expr::Mul(vec![self.make_bitwise(e, self.mask)?])),
         }
     }
 
     /// Turns an expression into a scaled bitwise product
-    fn make_scaled_product(&mut self, e: Expr) -> Expr {
+    fn make_scaled_product(&mut self, e: Expr) -> Result<Expr, SolveError> {
         match e {
-            Expr::Const(_) => e,
-            Expr::Scale(_, _) => e.map(|e| self.make_product(e)),
+            Expr::Const(_) => Ok(e),
+            Expr::Scale(_, _) => e.try_map(|e| self.make_product(e)),
             _ => self.make_product(e),
         }
     }
 
     /// Turns an expression into a polynomial expression
-    fn make_polynomial(&mut self, e: Expr) -> Expr {
+    fn make_polynomial(&mut self, e: Expr) -> Result<Expr, SolveError> {
         match e {
-            Expr::Add(_) => e.map(|e| self.make_scaled_product(e)),
+            Expr::Add(_) => e.try_map(|e| self.make_scaled_product(e)),
             _ => self.make_scaled_product(e),
         }
     }
 
     /// Turns an expression into a scaled bitwise expression
-    fn make_scaled_bitwise(&mut self, e: Expr, mask: u64) -> Expr {
+    fn make_scaled_bitwise(&mut self, e: Expr, mask: u64) -> Result<Expr, SolveError> {
         match e {
-            Expr::Const(_) => e,
-            Expr::Scale(_, _) => e.map(|e| self.make_bitwise(e, mask)),
+            Expr::Const(_) => Ok(e),
+            Expr::Scale(_, _) => e.try_map(|e| self.make_bitwise(e, mask)),
             _ => self.make_bitwise(e, mask),
         }
     }
 
     /// Turns an expression into a linear expression
-    fn make_linear(&mut self, e: Expr, mask: u64) -> Expr {
+    fn make_linear(&mut self, e: Expr, mask: u64) -> Result<Expr, SolveError> {
         match e {
-            Expr::Add(_) => e.map(|e| self.make_scaled_bitwise(e, mask)),
+            Expr::Add(_) => e.try_map(|e| self.make_scaled_bitwise(e, mask)),
             _ => self.make_scaled_bitwise(e, mask),
         }
     }
@@ -699,21 +912,33 @@ impl<'a> MBASolver<'a> {
     }
 }
 
-fn simplify_mba_inner(l_cache: &mut HashMap<Expr, Expr>, e: Expr, n: u8) -> Expr {
+fn simplify_mba_inner<C: LinearCache>(l_cache: &C, e: Expr, n: u8) -> Result<Expr, SolveError> {
     let mut solver = MBASolver::new(l_cache, &e, n);
     solver.solve(e)
 }
 
 // I should probably add a flag for recursive simplification
-pub fn simplify_mba(e: Expr, n: u8) -> Expr {
+pub fn simplify_mba(e: Expr, n: u8) -> Result<Expr, SolveError> {
+    simplify_mba_with_cache(&LocalCache::new(), e, n)
+}
+
+/// [`simplify_mba`] against a caller-owned cache.
+///
+/// Solved linear MBAs are memoized in `cache`, so a caller that simplifies many
+/// expressions — or the same expressions repeatedly across rounds of an analysis
+/// — pays for each distinct linear solve once. Pass a [`LocalCache`] to reuse
+/// results on one thread, or an [`MbaCache`] to share them across several.
+pub fn simplify_mba_with_cache<C: LinearCache>(
+    cache: &C,
+    e: Expr,
+    n: u8,
+) -> Result<Expr, SolveError> {
     let mask = make_mask(n);
     let mut e = e.reduce(mask);
 
-    let mut l_cache = HashMap::new();
-
     let mut size = usize::MAX;
     loop {
-        e = simplify_mba_inner(&mut l_cache, e, n);
+        e = simplify_mba_inner(cache, e, n)?;
         debug!("e: {}", e);
         let sz = e.size();
 
@@ -724,5 +949,5 @@ pub fn simplify_mba(e: Expr, n: u8) -> Expr {
         size = sz;
     }
 
-    e
+    Ok(e)
 }

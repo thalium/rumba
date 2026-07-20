@@ -5,6 +5,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
+use log::debug;
 
 use crate::{
     expr::{Expr, VarId},
@@ -252,8 +253,15 @@ impl Program {
             uses.remove(&id);
         }
 
-        // Simplify the expression
-        *e = simplify_mba(expr, insn.ty);
+        // Simplify the expression. A region the solver rejects keeps its
+        // original expression rather than failing the whole program.
+        *e = match simplify_mba(expr.clone(), insn.ty) {
+            Ok(simplified) => simplified,
+            Err(err) => {
+                debug!("leaving {expr} unsimplified: {err}");
+                expr
+            }
+        };
 
         // Update this instruction's uses
         for var in e.get_vars() {
