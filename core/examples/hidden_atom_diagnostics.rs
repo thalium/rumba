@@ -4,7 +4,8 @@ use rumba_core::{
     expr::Expr,
     parser::parse_expr,
     simplify::{
-        HiddenAtomDependencyKind, HiddenScopeTrace, diagnose_hidden_atoms,
+        DirectDependencyRejectReason, HiddenAtomDependencyKind, HiddenScopeTrace,
+        diagnose_hidden_atoms, experiment_direct_bitwise_dependencies,
     },
 };
 
@@ -113,5 +114,45 @@ fn main() {
         print_trace("mba", &simplified_mba, &mba_trace, verbose);
         print_trace("gt", &simplified_gt, &gt_trace, verbose);
         print_trace("residual", &residual, &residual_trace, verbose);
+
+        if line == 369 {
+            for scope in residual_trace.iter().filter(|scope| scope.input == residual) {
+                let Some(experiment) = experiment_direct_bitwise_dependencies(scope)
+                    .unwrap_or_else(|err| panic!("P7b-lite failed in scope {}: {err}", scope.scope))
+                else {
+                    continue;
+                };
+                println!(
+                    "p7b_lite line=369 scope={} direct_atoms={:?} attempted_atoms={:?} proofs={} result_nodes={} residual_zero={}",
+                    experiment.scope,
+                    experiment.direct_atoms,
+                    experiment.attempted_atoms,
+                    experiment.proofs.len(),
+                    experiment.simplified_after_substitution.size(),
+                    experiment.simplified_after_substitution == Expr::zero(),
+                );
+                for proof in experiment.proofs {
+                    println!(
+                        "  proof atom=v{} definition={} candidate={}",
+                        proof.atom, proof.definition, proof.candidate
+                    );
+                }
+                for rejection in experiment.rejections {
+                    match rejection.reason {
+                        DirectDependencyRejectReason::NonBooleanCube => println!(
+                            "  rejection atom=v{} reason=non_boolean_cube",
+                            rejection.atom
+                        ),
+                        DirectDependencyRejectReason::ExactProofNotFound {
+                            candidate,
+                            residual,
+                        } => println!(
+                            "  rejection atom=v{} reason=exact_proof_not_found candidate={} proof_residual={:?}",
+                            rejection.atom, candidate, residual
+                        ),
+                    }
+                }
+            }
+        }
     }
 }

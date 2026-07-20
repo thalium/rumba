@@ -51,6 +51,7 @@ pub struct HiddenScopeTrace {
     pub scope: usize,
     pub bit_width: u8,
     pub input: Expr,
+    pub pre_restore_result: Option<Expr>,
     pub atoms: Vec<HiddenAtomTrace>,
 }
 
@@ -74,10 +75,28 @@ fn begin_hidden_trace_scope(input: &Expr, bit_width: u8) -> Option<usize> {
             scope,
             bit_width,
             input: input.clone(),
+            pre_restore_result: None,
             atoms: Vec::new(),
         });
         Some(scope)
     })
+}
+
+fn record_pre_restore_result(scope: Option<usize>, result: &Expr) {
+    let Some(scope) = scope else {
+        return;
+    };
+
+    HIDDEN_TRACE_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().expect("pre-restore result without trace session");
+        let scope = state
+            .scopes
+            .iter_mut()
+            .find(|candidate| candidate.scope == scope)
+            .expect("unknown pre-restore trace scope");
+        scope.pre_restore_result = Some(result.clone());
+    });
 }
 
 fn record_hidden_atom(scope: Option<usize>, atom: VarId, original: Expr, simplified: Expr) {
@@ -198,6 +217,217 @@ fn finalize_hidden_trace(mut state: HiddenTraceState) -> Vec<HiddenScopeTrace> {
     }
 
     state.scopes
+}
+
+enum CandidateCertification {
+    Proved(Expr),
+    NonBooleanCube,
+    ExactProofNotFound { candidate: Expr, residual: Option<Expr> },
+}
+
+fn try_certify_bitwise_candidate(
+    definition: &Expr,
+    bit_width: u8,
+) -> CandidateCertification {
+    const MAX_DIRECT_PARENTS: usize = 3;
+
+    let mask = make_mask(bit_width);
+    let mut parents: Vec<_> = definition.get_vars().into_iter().collect();
+    parents.sort();
+    if parents.len() > MAX_DIRECT_PARENTS {
+        return CandidateCertification::NonBooleanCube;
+    }
+
+    let value_count = parents
+        .iter()
+        .map(|parent| parent.0)
+        .max()
+        .map_or(0, |max_id| max_id + 1);
+    let mut values = vec![0; value_count];
+    let mut minterms = Vec::new();
+
+    for assignment in 0..(1usize << parents.len()) {
+        for (index, parent) in parents.iter().enumerate() {
+            values[parent.0] = if (assignment >> index) & 1 == 0 {
+                0
+            } else {
+                mask
+            };
+        }
+
+        let output = definition.eval(&values).get(mask);
+        if output != 0 && output != mask {
+            return CandidateCertification::NonBooleanCube;
+        }
+        if output == 0 {
+            continue;
+        }
+
+        let terms: Vec<_> = parents
+            .iter()
+            .enumerate()
+            .map(|(index, parent)| {
+                let variable = Expr::Var(*parent);
+                if (assignment >> index) & 1 == 0 {
+                    !variable
+                } else {
+                    variable
+                }
+            })
+            .collect();
+        minterms.push(match terms.len() {
+            0 => Expr::Const(VarInt::MAX),
+            1 => terms.into_iter().next().unwrap(),
+            _ => Expr::And(terms),
+        });
+    }
+
+    let candidate = match minterms.len() {
+        0 => Expr::zero(),
+        1 => minterms.into_iter().next().unwrap(),
+        _ => Expr::Or(minterms),
+    }
+    .reduce(mask);
+    let proof = simplify_mba(
+        (definition.clone() - candidate.clone()).reduce(mask),
+        bit_width,
+    );
+
+    match proof {
+        Ok(proof) if proof == Expr::zero() => CandidateCertification::Proved(candidate),
+        Ok(residual) => CandidateCertification::ExactProofNotFound {
+            candidate,
+            residual: Some(residual),
+        },
+        Err(_) => CandidateCertification::ExactProofNotFound {
+            candidate,
+            residual: None,
+        },
+    }
+}
+
+#[cfg(test)]
+fn certify_bitwise_candidate(definition: &Expr, bit_width: u8) -> Option<Expr> {
+    match try_certify_bitwise_candidate(definition, bit_width) {
+        CandidateCertification::Proved(candidate) => Some(candidate),
+        CandidateCertification::NonBooleanCube
+        | CandidateCertification::ExactProofNotFound { .. } => None,
+    }
+}
+
+/// One exact word-level certificate produced by the P7b-lite diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectDependencyProof {
+    pub atom: VarId,
+    pub definition: Expr,
+    pub candidate: Expr,
+}
+
+/// Why one direct dependency was not certified.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DirectDependencyRejectReason {
+    NonBooleanCube,
+    ExactProofNotFound {
+        candidate: Expr,
+        residual: Option<Expr>,
+    },
+}
+
+/// One direct dependency rejected by the P7b-lite diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectDependencyRejection {
+    pub atom: VarId,
+    pub reason: DirectDependencyRejectReason,
+}
+
+/// Result of one substitution pass over atoms referenced directly by a
+/// pre-restoration solver result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectDependencyExperiment {
+    pub scope: usize,
+    pub direct_atoms: Vec<VarId>,
+    pub attempted_atoms: Vec<VarId>,
+    pub proofs: Vec<DirectDependencyProof>,
+    pub rejections: Vec<DirectDependencyRejection>,
+    pub substituted_pre_restore: Expr,
+    pub simplified_after_substitution: Expr,
+}
+
+/// Certify and substitute direct arithmetic dependencies in one traced scope.
+/// Returning a non-zero expression means only that the experiment did not
+/// prove the scope zero.
+pub fn experiment_direct_bitwise_dependencies(
+    scope: &HiddenScopeTrace,
+) -> Result<Option<DirectDependencyExperiment>, SolveError> {
+    let Some(pre_restore_result) = &scope.pre_restore_result else {
+        return Ok(None);
+    };
+
+    let atoms: HashMap<_, _> = scope.atoms.iter().map(|atom| (atom.atom, atom)).collect();
+    let mut direct_atoms: Vec<_> = pre_restore_result
+        .get_vars()
+        .into_iter()
+        .filter(|atom| atoms.contains_key(atom))
+        .collect();
+    direct_atoms.sort();
+
+    let mut attempted_atoms = Vec::new();
+    let mut proofs = Vec::new();
+    let mut rejections = Vec::new();
+    let mut substituted = pre_restore_result.clone();
+    for atom_id in &direct_atoms {
+        let atom = atoms[atom_id];
+        if atom.dependency_kind != HiddenAtomDependencyKind::ArithmeticDependent {
+            continue;
+        }
+        let Some(definition) = &atom.dependency_definition else {
+            continue;
+        };
+        if definition.get_vars().len() > 3 {
+            continue;
+        }
+
+        attempted_atoms.push(*atom_id);
+        match try_certify_bitwise_candidate(definition, scope.bit_width) {
+            CandidateCertification::Proved(candidate) => {
+                substituted = substituted.replace_var(*atom_id, &candidate);
+                proofs.push(DirectDependencyProof {
+                    atom: *atom_id,
+                    definition: definition.clone(),
+                    candidate,
+                });
+            }
+            CandidateCertification::NonBooleanCube => {
+                rejections.push(DirectDependencyRejection {
+                    atom: *atom_id,
+                    reason: DirectDependencyRejectReason::NonBooleanCube,
+                });
+            }
+            CandidateCertification::ExactProofNotFound {
+                candidate,
+                residual,
+            } => {
+                rejections.push(DirectDependencyRejection {
+                    atom: *atom_id,
+                    reason: DirectDependencyRejectReason::ExactProofNotFound {
+                        candidate,
+                        residual,
+                    },
+                });
+            }
+        }
+    }
+
+    let simplified_after_substitution = simplify_mba(substituted.clone(), scope.bit_width)?;
+    Ok(Some(DirectDependencyExperiment {
+        scope: scope.scope,
+        direct_atoms,
+        attempted_atoms,
+        proofs,
+        rejections,
+        substituted_pre_restore: substituted,
+        simplified_after_substitution,
+    }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -711,6 +941,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         let p = self.make_polynomial(e)?;
         let p = self.solve_polynomial(p)?;
+        record_pre_restore_result(self.trace_scope, &p);
 
         // This was a non linear MBA
         if self.non_linear_components.len() != 0 {
@@ -1626,6 +1857,9 @@ mod tests {
             atom.dependency_kind == HiddenAtomDependencyKind::ArithmeticDependent
                 && !atom.dependent_atoms.is_empty()
         }));
+        assert!(scopes
+            .iter()
+            .any(|scope| scope.pre_restore_result.is_some()));
         HIDDEN_TRACE_STATE.with(|state| assert!(state.borrow().is_none()));
     }
 
@@ -1639,5 +1873,88 @@ mod tests {
             &(x & Expr::Var(1.into())),
             make_mask(64)
         ));
+    }
+
+    #[test]
+    fn semantic_bitwise_candidate_certifies_arithmetic_not() {
+        let q = Expr::Var(0.into());
+        let definition = -q.clone() - Expr::make_const(1);
+
+        assert_eq!(certify_bitwise_candidate(&definition, 64), Some(!q));
+    }
+
+    #[test]
+    fn semantic_bitwise_candidate_certifies_arithmetic_xor() {
+        let q = Expr::Var(0.into());
+        let r = Expr::Var(1.into());
+        let definition = q.clone() + r.clone()
+            - VarInt::from(2u64) * (q.clone() & r.clone());
+
+        let candidate = certify_bitwise_candidate(&definition, 64).unwrap();
+
+        assert!(candidate.is_bitwise());
+        assert_eq!(simplify_mba(definition - candidate, 64), Ok(Expr::zero()));
+    }
+
+    #[test]
+    fn semantic_bitwise_candidate_certifies_arithmetic_or() {
+        let q = Expr::Var(0.into());
+        let r = Expr::Var(1.into());
+        let definition = q.clone() + r.clone() - (q.clone() & r.clone());
+
+        let candidate = certify_bitwise_candidate(&definition, 64).unwrap();
+
+        assert!(candidate.is_bitwise());
+        assert_eq!(simplify_mba(definition - candidate, 64), Ok(Expr::zero()));
+    }
+
+    #[test]
+    fn semantic_bitwise_candidate_rejects_boolean_only_polynomial() {
+        let x = Expr::Var(0.into());
+        let definition = x.clone() * x.clone() - x;
+
+        assert_eq!(certify_bitwise_candidate(&definition, 64), None);
+    }
+
+    #[test]
+    fn semantic_bitwise_candidate_rejects_partial_word_constant() {
+        let x = Expr::Var(0.into());
+        let definition = x & Expr::make_const(1);
+
+        assert_eq!(certify_bitwise_candidate(&definition, 64), None);
+    }
+
+    #[test]
+    fn direct_dependency_experiment_substitutes_only_proved_candidate() {
+        let q = Expr::Var(0.into());
+        let b = Expr::Var(1.into());
+        let d: VarId = 2.into();
+        let definition = -q.clone() - Expr::make_const(1);
+        let pre_restore = -b.clone()
+            + (b.clone() & Expr::Var(d))
+            + (b & q);
+        let scope = HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore),
+            atoms: vec![HiddenAtomTrace {
+                atom: d,
+                original: definition.clone(),
+                simplified: definition.clone(),
+                free_atoms: vec![0.into()],
+                dependent_atoms: vec![0.into()],
+                dependency_definition: Some(definition),
+                dependency_kind: HiddenAtomDependencyKind::ArithmeticDependent,
+            }],
+        };
+
+        let experiment = experiment_direct_bitwise_dependencies(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(experiment.proofs.len(), 1);
+        assert!(experiment.rejections.is_empty());
+        assert_eq!(experiment.simplified_after_substitution, Expr::zero());
     }
 }
