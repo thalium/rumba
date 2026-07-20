@@ -22,6 +22,10 @@ test:
 all-test:
     cargo test --all-features -- --nocapture
 
+# Reproduce the bitwise-frontier baseline and the complete dataset corpus
+bitwise-frontier-baseline:
+    scripts/test_bitwise_frontier.sh
+
 bench:
     cargo bench --all-features
 
