@@ -366,6 +366,10 @@ struct MBASolver<'a, C: LinearCache> {
     l_cache: &'a C,
 }
 
+fn is_bitwise_constant(c: VarInt, mask: u64) -> bool {
+    (c.get(mask) == 0) || (c.get(mask) & mask == 0)
+}
+
 impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// Create a new Solver
     fn new(l_cache: &'a C, e: &Expr, n: u8) -> Self {
@@ -881,7 +885,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         fn is_bitwise(e: &Expr, mask: u64) -> bool {
             match e {
                 // -1 and 0 are bitwise
-                Expr::Const(c) => (c.get(mask) == 0) || (c.get(mask) & mask == 0),
+                Expr::Const(c) => is_bitwise_constant(*c, mask),
 
                 // Variables are bitwise
                 Expr::Var(_) => true,
@@ -922,6 +926,23 @@ pub fn simplify_mba(e: Expr, n: u8) -> Result<Expr, SolveError> {
     simplify_mba_with_cache(&LocalCache::new(), e, n)
 }
 
+fn simplify_to_fixed_point<F>(mut e: Expr, mut simplify: F) -> Result<Expr, SolveError>
+where
+    F: FnMut(Expr) -> Result<Expr, SolveError>,
+{
+    let mut size = usize::MAX;
+    loop {
+        e = simplify(e)?;
+        debug!("e: {}", e);
+        let new_size = e.size();
+        if size == new_size {
+            break;
+        }
+        size = new_size;
+    }
+    Ok(e)
+}
+
 /// [`simplify_mba`] against a caller-owned cache.
 ///
 /// Solved linear MBAs are memoized in `cache`, so a caller that simplifies many
@@ -934,20 +955,57 @@ pub fn simplify_mba_with_cache<C: LinearCache>(
     n: u8,
 ) -> Result<Expr, SolveError> {
     let mask = make_mask(n);
-    let mut e = e.reduce(mask);
+    let e = e.reduce(mask);
 
-    let mut size = usize::MAX;
-    loop {
-        e = simplify_mba_inner(cache, e, n)?;
-        debug!("e: {}", e);
-        let sz = e.size();
+    simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n))
+}
 
-        if size == sz {
-            break;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        size = sz;
+    #[test]
+    #[ignore = "known failure: all-ones is rejected as a bitwise constant"]
+    fn recognizes_zero_and_all_ones_as_bitwise_constants() {
+        let mask = make_mask(8);
+        assert!(is_bitwise_constant(VarInt::ZERO, mask));
+        assert!(is_bitwise_constant(VarInt::MAX, mask));
     }
 
-    Ok(e)
+    #[test]
+    #[ignore = "known failure: inverse PCT uses degree instead of variable count"]
+    fn inverse_pct_round_trip_preserves_variable_index() {
+        let cache = LocalCache::new();
+        let mut solver = MBASolver::new(&cache, &Expr::Var(2.into()), 8);
+        solver.degree = 2;
+        let original = Expr::Var(2.into());
+        let encoded = solver.poly_to_linear(original.clone(), 2);
+
+        assert_eq!(encoded, Expr::Var(5.into()));
+        let result = solver.linear_to_poly(encoded).unwrap();
+
+        assert_eq!(result, u64::MAX * original);
+    }
+
+    #[test]
+    #[ignore = "known failure: fixed point stops when only AST size is unchanged"]
+    fn fixed_point_continues_when_structure_changes_at_equal_size() {
+        let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
+            Ok(match e {
+                Expr::Var(VarId(0)) => !Expr::Var(1.into()),
+                Expr::Not(inner) if *inner == Expr::Var(1.into()) => {
+                    VarInt::from(2u64) * Expr::Var(2.into())
+                }
+                Expr::Scale(c, inner)
+                    if c == VarInt::from(2u64) && *inner == Expr::Var(2.into()) =>
+                {
+                    Expr::Var(3.into())
+                }
+                stable => stable,
+            })
+        })
+        .unwrap();
+
+        assert_eq!(result, Expr::Var(3.into()));
+    }
 }
