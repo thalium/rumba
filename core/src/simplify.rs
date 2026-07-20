@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     cmp::max,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Mutex,
         atomic::{AtomicI64, AtomicU64, Ordering},
@@ -513,6 +513,304 @@ pub fn experiment_direct_complement_relation(
         relation,
         proof,
         substituted_pre_restore,
+        simplified_after_substitution,
+    }))
+}
+
+const MAX_GUIDED_ALIAS_PAIRS: usize = 12;
+
+fn insert_guided_pair(
+    pairs: &mut Vec<(VarId, VarId)>,
+    seen: &mut HashSet<(VarId, VarId)>,
+    left: VarId,
+    right: VarId,
+) {
+    if left == right || pairs.len() == MAX_GUIDED_ALIAS_PAIRS {
+        return;
+    }
+    let pair = if left < right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    if seen.insert(pair) {
+        pairs.push(pair);
+    }
+}
+
+fn atom_contexts_in_add_term(
+    term: &Expr,
+    direct_atoms: &HashSet<VarId>,
+    mask: u64,
+) -> Vec<(VarId, (u8, Expr))> {
+    let mut body = term;
+    while let Expr::Scale(_, inner) = body {
+        body = inner;
+    }
+
+    let (tag, terms) = match body {
+        Expr::Var(atom) if direct_atoms.contains(atom) => {
+            return vec![(*atom, (0, Expr::zero()))];
+        }
+        Expr::And(terms) => (1, terms),
+        Expr::Or(terms) => (2, terms),
+        Expr::Xor(terms) => (3, terms),
+        Expr::Mul(terms) => (4, terms),
+        _ => return Vec::new(),
+    };
+
+    terms
+        .iter()
+        .enumerate()
+        .filter_map(|(candidate_index, candidate)| {
+            let Expr::Var(atom) = candidate else {
+                return None;
+            };
+            if !direct_atoms.contains(atom) {
+                return None;
+            }
+            let remaining: Vec<_> = terms
+                .iter()
+                .enumerate()
+                .filter(|(term_index, _)| *term_index != candidate_index)
+                .map(|(_, term)| term)
+                .cloned()
+                .collect();
+            let context = match tag {
+                1 => Expr::And(remaining),
+                2 => Expr::Or(remaining),
+                3 => Expr::Xor(remaining),
+                4 => Expr::Mul(remaining),
+                _ => unreachable!(),
+            }
+            .reduce(mask);
+            Some((*atom, (tag, context)))
+        })
+        .collect()
+}
+
+fn collect_locally_copresent_pairs(
+    expression: &Expr,
+    direct_atoms: &HashSet<VarId>,
+    pairs: &mut Vec<(VarId, VarId)>,
+    seen: &mut HashSet<(VarId, VarId)>,
+) {
+    match expression {
+        Expr::And(terms) | Expr::Or(terms) | Expr::Xor(terms) | Expr::Mul(terms) => {
+            let mut local_atoms: Vec<_> = expression
+                .get_vars()
+                .into_iter()
+                .filter(|atom| direct_atoms.contains(atom))
+                .collect();
+            local_atoms.sort();
+            for (index, left) in local_atoms.iter().enumerate() {
+                for right in &local_atoms[index + 1..] {
+                    insert_guided_pair(pairs, seen, *left, *right);
+                }
+            }
+            for term in terms {
+                collect_locally_copresent_pairs(term, direct_atoms, pairs, seen);
+            }
+        }
+        Expr::Add(terms) => {
+            for term in terms {
+                collect_locally_copresent_pairs(term, direct_atoms, pairs, seen);
+            }
+        }
+        Expr::Not(inner) | Expr::Scale(_, inner) => {
+            collect_locally_copresent_pairs(inner, direct_atoms, pairs, seen);
+        }
+        Expr::Var(_) | Expr::Const(_) => {}
+    }
+}
+
+fn select_guided_direct_pairs(
+    pre_restore_result: &Expr,
+    direct_atoms: &HashSet<VarId>,
+    mask: u64,
+) -> Vec<(VarId, VarId)> {
+    let terms = match pre_restore_result {
+        Expr::Add(terms) => terms.as_slice(),
+        expression => std::slice::from_ref(expression),
+    };
+    let mut contexts: BTreeMap<(u8, Expr), Vec<VarId>> = BTreeMap::new();
+    for term in terms {
+        for (atom, context) in atom_contexts_in_add_term(term, direct_atoms, mask) {
+            contexts.entry(context).or_default().push(atom);
+        }
+    }
+
+    let mut pairs = Vec::new();
+    let mut seen = HashSet::new();
+    for atoms in contexts.values_mut() {
+        atoms.sort();
+        atoms.dedup();
+        for (index, left) in atoms.iter().enumerate() {
+            for right in &atoms[index + 1..] {
+                insert_guided_pair(&mut pairs, &mut seen, *left, *right);
+            }
+        }
+    }
+    collect_locally_copresent_pairs(
+        pre_restore_result,
+        direct_atoms,
+        &mut pairs,
+        &mut seen,
+    );
+    pairs
+}
+
+/// The three bounded semantic aliases considered by P7d-lite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticAlias {
+    Equal,
+    Complement,
+    ArithmeticOpposite,
+}
+
+/// Outcome of one exact semantic-alias proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SemanticAliasProof {
+    Proved,
+    NotProved { residual: Expr },
+    ProofError(SolveError),
+}
+
+/// One relation attempted between a structurally selected pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticAliasAttempt {
+    pub left: VarId,
+    pub right: VarId,
+    pub alias: SemanticAlias,
+    pub relation: Expr,
+    pub proof: SemanticAliasProof,
+}
+
+/// One alias selected for diagnostic substitution after exact certification.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CertifiedSemanticAlias {
+    pub left: VarId,
+    pub right: VarId,
+    pub alias: SemanticAlias,
+}
+
+/// Bounded P7d-lite result for one final pre-restoration scope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuidedSemanticAliasExperiment {
+    pub scope: usize,
+    pub direct_atoms: Vec<VarId>,
+    pub candidate_pairs: Vec<(VarId, VarId)>,
+    pub attempts: Vec<SemanticAliasAttempt>,
+    pub certified_aliases: Vec<CertifiedSemanticAlias>,
+    pub substituted_pre_restore: Expr,
+    pub simplified_after_substitution: Expr,
+}
+
+/// Search only equality, complement and arithmetic-opposite relations between
+/// direct hidden atoms selected from the structure of one pre-restoration
+/// result. This diagnostic does not alter the ordinary simplification path.
+pub fn experiment_guided_semantic_aliases(
+    scope: &HiddenScopeTrace,
+) -> Result<Option<GuidedSemanticAliasExperiment>, SolveError> {
+    let Some(pre_restore_result) = &scope.pre_restore_result else {
+        return Ok(None);
+    };
+
+    let atoms: HashMap<_, _> = scope.atoms.iter().map(|atom| (atom.atom, atom)).collect();
+    let mut direct_atoms: Vec<_> = pre_restore_result
+        .get_vars()
+        .into_iter()
+        .filter(|atom| atoms.contains_key(atom))
+        .collect();
+    direct_atoms.sort();
+    let direct_atom_set: HashSet<_> = direct_atoms.iter().copied().collect();
+    let mask = make_mask(scope.bit_width);
+    let candidate_pairs =
+        select_guided_direct_pairs(pre_restore_result, &direct_atom_set, mask);
+    let cache = LocalCache::new();
+    let mut definitions = HashMap::new();
+    for atom in &direct_atoms {
+        let definition = atoms[atom].simplified.clone();
+        let simplified = simplify_mba_with_cache(&cache, definition.clone(), scope.bit_width)
+            .unwrap_or(definition);
+        definitions.insert(*atom, simplified);
+    }
+
+    let mut attempts = Vec::new();
+    let mut certified_aliases = Vec::new();
+    for (left, right) in &candidate_pairs {
+        let left_definition = &definitions[left];
+        let right_definition = &definitions[right];
+        let mut selected_alias = None;
+        for alias in [
+            SemanticAlias::Equal,
+            SemanticAlias::Complement,
+            SemanticAlias::ArithmeticOpposite,
+        ] {
+            let relation = match alias {
+                SemanticAlias::Equal => left_definition.clone() - right_definition.clone(),
+                SemanticAlias::Complement => {
+                    left_definition.clone()
+                        + right_definition.clone()
+                        + Expr::make_const(1)
+                }
+                SemanticAlias::ArithmeticOpposite => {
+                    left_definition.clone() + right_definition.clone()
+                }
+            }
+            .reduce(mask);
+            let proof = match simplify_mba_with_cache(
+                &cache,
+                relation.clone(),
+                scope.bit_width,
+            ) {
+                Ok(residual) if residual == Expr::zero() => {
+                    if selected_alias.is_none() {
+                        selected_alias = Some(CertifiedSemanticAlias {
+                            left: *left,
+                            right: *right,
+                            alias,
+                        });
+                    }
+                    SemanticAliasProof::Proved
+                }
+                Ok(residual) => SemanticAliasProof::NotProved { residual },
+                Err(error) => SemanticAliasProof::ProofError(error),
+            };
+            attempts.push(SemanticAliasAttempt {
+                left: *left,
+                right: *right,
+                alias,
+                relation,
+                proof,
+            });
+        }
+        if let Some(alias) = selected_alias {
+            certified_aliases.push(alias);
+        }
+    }
+
+    certified_aliases.sort_by_key(|alias| std::cmp::Reverse(alias.right));
+    let mut substituted = pre_restore_result.clone();
+    for alias in &certified_aliases {
+        let representative = Expr::Var(alias.left);
+        let replacement = match alias.alias {
+            SemanticAlias::Equal => representative,
+            SemanticAlias::Complement => !representative,
+            SemanticAlias::ArithmeticOpposite => -representative,
+        };
+        substituted = substituted.replace_var(alias.right, &replacement);
+    }
+    let simplified_after_substitution =
+        simplify_mba_with_cache(&cache, substituted.clone(), scope.bit_width)?;
+
+    Ok(Some(GuidedSemanticAliasExperiment {
+        scope: scope.scope,
+        direct_atoms,
+        candidate_pairs,
+        attempts,
+        certified_aliases,
+        substituted_pre_restore: substituted,
         simplified_after_substitution,
     }))
 }
@@ -2127,5 +2425,170 @@ mod tests {
         ));
         assert_eq!(experiment.substituted_pre_restore, None);
         assert_eq!(experiment.simplified_after_substitution, None);
+    }
+
+    #[test]
+    fn guided_alias_pair_selection_matches_equal_bitwise_contexts() {
+        let carrier = Expr::Var(0.into());
+        let left: VarId = 1.into();
+        let right: VarId = 2.into();
+        let pre_restore = VarInt::from(2u64) * (carrier.clone() & Expr::Var(left))
+            - VarInt::from(2u64) * (carrier & Expr::Var(right));
+        let direct_atoms = HashSet::from([left, right]);
+
+        assert_eq!(
+            select_guided_direct_pairs(&pre_restore, &direct_atoms, make_mask(64)),
+            vec![(left, right)]
+        );
+    }
+
+    #[test]
+    fn guided_alias_pair_selection_includes_local_copresence_and_obeys_budget() {
+        let atoms: Vec<VarId> = (0..6).map(VarId::from).collect();
+        let expression = Expr::And(atoms.iter().copied().map(Expr::Var).collect());
+        let direct_atoms: HashSet<_> = atoms.into_iter().collect();
+
+        let pairs =
+            select_guided_direct_pairs(&expression, &direct_atoms, make_mask(64));
+
+        assert_eq!(pairs.len(), MAX_GUIDED_ALIAS_PAIRS);
+        assert!(pairs.contains(&(0.into(), 1.into())));
+    }
+
+    #[test]
+    fn guided_alias_experiment_substitutes_only_certified_relations() {
+        let x = Expr::Var(0.into());
+        let y = Expr::Var(1.into());
+        let carrier = Expr::Var(2.into());
+        let left: VarId = 3.into();
+        let right: VarId = 4.into();
+        let definition = x + y;
+        let pre_restore = VarInt::from(2u64) * (carrier.clone() & Expr::Var(left))
+            - VarInt::from(2u64) * (carrier & Expr::Var(right));
+        let make_atom = |atom| HiddenAtomTrace {
+            atom,
+            original: definition.clone(),
+            simplified: definition.clone(),
+            free_atoms: vec![0.into(), 1.into()],
+            dependent_atoms: Vec::new(),
+            dependency_definition: None,
+            dependency_kind: HiddenAtomDependencyKind::Root,
+        };
+        let scope = HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore),
+            atoms: vec![make_atom(left), make_atom(right)],
+        };
+
+        let experiment = experiment_guided_semantic_aliases(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(experiment.candidate_pairs, vec![(left, right)]);
+        assert_eq!(
+            experiment.certified_aliases,
+            vec![CertifiedSemanticAlias {
+                left,
+                right,
+                alias: SemanticAlias::Equal,
+            }]
+        );
+        assert_eq!(experiment.attempts.len(), 3);
+        assert_eq!(experiment.simplified_after_substitution, Expr::zero());
+    }
+
+    #[test]
+    fn guided_alias_experiment_keeps_unproved_pairs_unchanged() {
+        let carrier = Expr::Var(0.into());
+        let left: VarId = 1.into();
+        let right: VarId = 2.into();
+        let pre_restore = (carrier.clone() & Expr::Var(left))
+            - (carrier & Expr::Var(right));
+        let make_atom = |atom, definition| HiddenAtomTrace {
+            atom,
+            original: definition,
+            simplified: Expr::Var(atom),
+            free_atoms: vec![atom],
+            dependent_atoms: Vec::new(),
+            dependency_definition: None,
+            dependency_kind: HiddenAtomDependencyKind::Root,
+        };
+        let scope = HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore.clone()),
+            atoms: vec![
+                make_atom(left, Expr::Var(left)),
+                make_atom(right, Expr::Var(right)),
+            ],
+        };
+
+        let experiment = experiment_guided_semantic_aliases(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert!(experiment.certified_aliases.is_empty());
+        assert_eq!(experiment.substituted_pre_restore, pre_restore);
+    }
+
+    #[test]
+    fn guided_alias_experiment_certifies_complement_and_opposite() {
+        let x = Expr::Var(0.into());
+        let carrier = Expr::Var(1.into());
+        let left: VarId = 2.into();
+        let right: VarId = 3.into();
+        let make_scope = |pre_restore: Expr, right_definition: Expr| {
+            let pre_restore = pre_restore.reduce(make_mask(64));
+            let make_atom = |atom, definition: Expr| HiddenAtomTrace {
+                atom,
+                original: definition.clone(),
+                simplified: definition,
+                free_atoms: vec![0.into()],
+                dependent_atoms: Vec::new(),
+                dependency_definition: None,
+                dependency_kind: HiddenAtomDependencyKind::Root,
+            };
+            HiddenScopeTrace {
+                scope: 0,
+                bit_width: 64,
+                input: pre_restore.clone(),
+                pre_restore_result: Some(pre_restore),
+                atoms: vec![
+                    make_atom(left, x.clone()),
+                    make_atom(right, right_definition),
+                ],
+            }
+        };
+        let complement_scope = make_scope(
+            -carrier.clone()
+                + (carrier.clone() & Expr::Var(left))
+                + (carrier & Expr::Var(right)),
+            -x.clone() - Expr::make_const(1),
+        );
+        let opposite_scope = make_scope(
+            Expr::Var(left) + Expr::Var(right),
+            -x.clone(),
+        );
+
+        let complement = experiment_guided_semantic_aliases(&complement_scope)
+            .unwrap()
+            .unwrap();
+        let opposite = experiment_guided_semantic_aliases(&opposite_scope)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            complement.certified_aliases[0].alias,
+            SemanticAlias::Complement
+        );
+        assert_eq!(complement.simplified_after_substitution, Expr::zero());
+        assert_eq!(
+            opposite.certified_aliases[0].alias,
+            SemanticAlias::ArithmeticOpposite
+        );
+        assert_eq!(opposite.simplified_after_substitution, Expr::zero());
     }
 }

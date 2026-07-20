@@ -4,8 +4,10 @@ use rumba_core::{
     expr::Expr,
     parser::parse_expr,
     simplify::{
-        ComplementRelationProof, DirectComplementExperiment, diagnose_hidden_atoms,
-        experiment_direct_complement_relation, simplify_mba,
+        CertifiedSemanticAlias, ComplementRelationProof, DirectComplementExperiment,
+        GuidedSemanticAliasExperiment, SemanticAlias, diagnose_hidden_atoms,
+        experiment_direct_complement_relation, experiment_guided_semantic_aliases,
+        simplify_mba,
     },
 };
 
@@ -98,6 +100,49 @@ fn qsynth_369_resolves_with_semantic_atom_complement() {
         experiment.simplified_after_substitution,
         Some(Expr::zero())
     );
+}
+
+fn qsynth_guided_alias_experiment(line: usize) -> GuidedSemanticAliasExperiment {
+    let (mba, ground_truth) = qsynth_case(line);
+    let simplified_mba = simplify_mba(mba, BIT_COUNT).unwrap();
+    let simplified_ground_truth = simplify_mba(ground_truth, BIT_COUNT).unwrap();
+    let (residual, trace) = diagnose_hidden_atoms(
+        simplified_ground_truth - simplified_mba,
+        BIT_COUNT,
+    )
+    .unwrap();
+    let scope = trace
+        .iter()
+        .find(|scope| scope.input == residual)
+        .expect("missing final residual scope");
+
+    experiment_guided_semantic_aliases(scope)
+        .unwrap()
+        .expect("final scope does not have a pre-restoration result")
+}
+
+#[test]
+fn p7d_lite_finds_equal_alias_but_does_not_resolve_qsynth_line_260() {
+    let experiment = qsynth_guided_alias_experiment(260);
+
+    assert!(experiment.certified_aliases.contains(&CertifiedSemanticAlias {
+        left: 8.into(),
+        right: 9.into(),
+        alias: SemanticAlias::Equal,
+    }));
+    assert_ne!(experiment.simplified_after_substitution, Expr::zero());
+}
+
+#[test]
+fn p7d_lite_resolves_qsynth_line_481_with_equal_alias() {
+    let experiment = qsynth_guided_alias_experiment(481);
+
+    assert!(experiment.certified_aliases.contains(&CertifiedSemanticAlias {
+        left: 6.into(),
+        right: 7.into(),
+        alias: SemanticAlias::Equal,
+    }));
+    assert_eq!(experiment.simplified_after_substitution, Expr::zero());
 }
 
 #[test]

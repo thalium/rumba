@@ -5,8 +5,9 @@ use rumba_core::{
     parser::parse_expr,
     simplify::{
         ComplementRelationProof, DirectDependencyRejectReason, HiddenAtomDependencyKind,
-        HiddenScopeTrace, diagnose_hidden_atoms, experiment_direct_bitwise_dependencies,
-        experiment_direct_complement_relation,
+        HiddenScopeTrace, SemanticAliasProof, diagnose_hidden_atoms,
+        experiment_direct_bitwise_dependencies, experiment_direct_complement_relation,
+        experiment_guided_semantic_aliases,
     },
 };
 
@@ -75,12 +76,16 @@ fn print_trace(label: &str, result: &Expr, scopes: &[HiddenScopeTrace], verbose:
         }
 
         println!(
-            "  scope={} width={} input_nodes={} atoms={}",
+            "  scope={} width={} input_nodes={} atoms={} input_is_result={}",
             scope.scope,
             scope.bit_width,
             scope.input.size(),
-            scope.atoms.len()
+            scope.atoms.len(),
+            scope.input == *result,
         );
+        if let Some(pre_restore_result) = &scope.pre_restore_result {
+            println!("    pre_restore_result={pre_restore_result}");
+        }
         for atom in &scope.atoms {
             println!(
                 "    atom=v{} kind={:?} free={:?} dependent={:?} dependency_definition={:?} original={} simplified={}",
@@ -191,6 +196,55 @@ fn main() {
                     }
                     ComplementRelationProof::ProofError(error) => {
                         println!("  proof_error={error}");
+                    }
+                }
+            }
+        } else {
+            for scope in residual_trace.iter().filter(|scope| scope.input == residual) {
+                let Some(experiment) = experiment_guided_semantic_aliases(scope)
+                    .unwrap_or_else(|err| panic!("P7d-lite failed in scope {}: {err}", scope.scope))
+                else {
+                    continue;
+                };
+                let proved = experiment
+                    .attempts
+                    .iter()
+                    .filter(|attempt| attempt.proof == SemanticAliasProof::Proved)
+                    .count();
+                let proof_errors = experiment
+                    .attempts
+                    .iter()
+                    .filter(|attempt| matches!(attempt.proof, SemanticAliasProof::ProofError(_)))
+                    .count();
+                println!(
+                    "p7d_lite line={} scope={} direct_atoms={:?} candidate_pairs={:?} attempts={} proved={} proof_errors={} substitutions={} result_nodes={} residual_zero={}",
+                    line,
+                    experiment.scope,
+                    experiment.direct_atoms,
+                    experiment.candidate_pairs,
+                    experiment.attempts.len(),
+                    proved,
+                    proof_errors,
+                    experiment.certified_aliases.len(),
+                    experiment.simplified_after_substitution.size(),
+                    experiment.simplified_after_substitution == Expr::zero(),
+                );
+                for alias in &experiment.certified_aliases {
+                    println!(
+                        "  alias left=v{} right=v{} kind={:?}",
+                        alias.left, alias.right, alias.alias
+                    );
+                }
+                if verbose {
+                    for attempt in &experiment.attempts {
+                        println!(
+                            "  attempt left=v{} right=v{} kind={:?} proof={:?} relation={}",
+                            attempt.left,
+                            attempt.right,
+                            attempt.alias,
+                            attempt.proof,
+                            attempt.relation,
+                        );
                     }
                 }
             }
