@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     cmp::max,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -19,6 +19,7 @@ use log::debug;
 /// The largest number of variables a linear MBA may carry into the truth-table
 /// solve. The signature is `2^t` wide, so this bounds one solve at 1M entries.
 pub const MAX_VARS: usize = 20;
+const MAX_SIMPLIFICATION_PASSES: usize = 8;
 
 /// Why the solver could not simplify an expression.
 ///
@@ -930,17 +931,31 @@ fn simplify_to_fixed_point<F>(mut e: Expr, mut simplify: F) -> Result<Expr, Solv
 where
     F: FnMut(Expr) -> Result<Expr, SolveError>,
 {
-    let mut size = usize::MAX;
-    loop {
-        e = simplify(e)?;
-        debug!("e: {}", e);
-        let new_size = e.size();
-        if size == new_size {
-            break;
+    let mut seen = HashSet::from([e.clone()]);
+    let mut best = e.clone();
+
+    for _ in 0..MAX_SIMPLIFICATION_PASSES {
+        let next = simplify(e.clone())?;
+        debug!("e: {}", next);
+
+        if next.size() < best.size() {
+            best = next.clone();
         }
-        size = new_size;
+
+        if next == e {
+            return Ok(next);
+        }
+
+        if !seen.insert(next.clone()) {
+            debug!("simplification cycle detected; retaining best expression");
+            return Ok(best);
+        }
+
+        e = next;
     }
-    Ok(e)
+
+    debug!("simplification pass limit reached; retaining best expression");
+    Ok(best)
 }
 
 /// [`simplify_mba`] against a caller-owned cache.
@@ -986,7 +1001,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known failure: fixed point stops when only AST size is unchanged"]
     fn fixed_point_continues_when_structure_changes_at_equal_size() {
         let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
             Ok(match e {
@@ -1005,5 +1019,36 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, Expr::Var(3.into()));
+    }
+
+    #[test]
+    fn fixed_point_cycle_returns_lowest_cost_expression() {
+        let start = !Expr::Var(0.into());
+        let result = simplify_to_fixed_point(start.clone(), |e| {
+            Ok(if e == start {
+                Expr::Var(1.into())
+            } else {
+                start.clone()
+            })
+        })
+        .unwrap();
+
+        assert_eq!(result, Expr::Var(1.into()));
+    }
+
+    #[test]
+    fn fixed_point_stops_after_maximum_number_of_passes() {
+        let calls = Cell::new(0usize);
+        let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
+            calls.set(calls.get() + 1);
+            Ok(match e {
+                Expr::Var(v) => Expr::Var((v.0 + 1).into()),
+                other => other,
+            })
+        })
+        .unwrap();
+
+        assert_eq!(calls.get(), MAX_SIMPLIFICATION_PASSES);
+        assert_eq!(result, Expr::Var(0.into()));
     }
 }
