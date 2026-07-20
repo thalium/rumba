@@ -4,8 +4,9 @@ use rumba_core::{
     expr::Expr,
     parser::parse_expr,
     simplify::{
-        DirectDependencyRejectReason, HiddenAtomDependencyKind, HiddenScopeTrace,
-        diagnose_hidden_atoms, experiment_direct_bitwise_dependencies,
+        ComplementRelationProof, DirectDependencyRejectReason, HiddenAtomDependencyKind,
+        HiddenScopeTrace, diagnose_hidden_atoms, experiment_direct_bitwise_dependencies,
+        experiment_direct_complement_relation,
     },
 };
 
@@ -150,6 +151,46 @@ fn main() {
                             "  rejection atom=v{} reason=exact_proof_not_found candidate={} proof_residual={:?}",
                             rejection.atom, candidate, residual
                         ),
+                    }
+                }
+
+                let Some(experiment) = experiment_direct_complement_relation(scope)
+                    .unwrap_or_else(|err| panic!("P7c-lite failed in scope {}: {err}", scope.scope))
+                else {
+                    continue;
+                };
+                let result_nodes = experiment
+                    .simplified_after_substitution
+                    .as_ref()
+                    .map(Expr::size);
+                let residual_zero = experiment
+                    .simplified_after_substitution
+                    .as_ref()
+                    .is_some_and(|result| *result == Expr::zero());
+                let proof = match &experiment.proof {
+                    ComplementRelationProof::Proved => "proved",
+                    ComplementRelationProof::NotProved { .. } => "not_proved",
+                    ComplementRelationProof::ProofError(_) => "proof_error",
+                };
+                println!(
+                    "p7c_lite line=369 scope={} left=v{} right=v{} proof={} result_nodes={:?} residual_zero={}",
+                    experiment.scope,
+                    experiment.left,
+                    experiment.right,
+                    proof,
+                    result_nodes,
+                    residual_zero,
+                );
+                println!("  relation={}", experiment.relation);
+                println!("  left_definition={}", experiment.left_definition);
+                println!("  right_definition={}", experiment.right_definition);
+                match experiment.proof {
+                    ComplementRelationProof::Proved => {}
+                    ComplementRelationProof::NotProved { residual } => {
+                        println!("  proof_residual={residual}");
+                    }
+                    ComplementRelationProof::ProofError(error) => {
+                        println!("  proof_error={error}");
                     }
                 }
             }

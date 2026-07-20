@@ -430,6 +430,93 @@ pub fn experiment_direct_bitwise_dependencies(
     }))
 }
 
+/// Outcome of the exact complement proof attempted by P7c-lite.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComplementRelationProof {
+    Proved,
+    NotProved { residual: Expr },
+    ProofError(SolveError),
+}
+
+/// Result of the targeted complement experiment over the two direct hidden
+/// atoms of one pre-restoration result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectComplementExperiment {
+    pub scope: usize,
+    pub left: VarId,
+    pub right: VarId,
+    pub left_definition: Expr,
+    pub right_definition: Expr,
+    pub relation: Expr,
+    pub proof: ComplementRelationProof,
+    pub substituted_pre_restore: Option<Expr>,
+    pub simplified_after_substitution: Option<Expr>,
+}
+
+/// Test the exact relation `left + right + 1 == 0` for the two hidden atoms
+/// referenced directly by a pre-restoration result.
+pub fn experiment_direct_complement_relation(
+    scope: &HiddenScopeTrace,
+) -> Result<Option<DirectComplementExperiment>, SolveError> {
+    let Some(pre_restore_result) = &scope.pre_restore_result else {
+        return Ok(None);
+    };
+
+    let atoms: HashMap<_, _> = scope.atoms.iter().map(|atom| (atom.atom, atom)).collect();
+    let mut direct_atoms: Vec<_> = pre_restore_result
+        .get_vars()
+        .into_iter()
+        .filter(|atom| atoms.contains_key(atom))
+        .collect();
+    direct_atoms.sort();
+    let [left, right] = direct_atoms.as_slice() else {
+        return Ok(None);
+    };
+    let left_definition = atoms[left].simplified.clone();
+    let right_definition = atoms[right].simplified.clone();
+    let relation = (left_definition.clone()
+        + right_definition.clone()
+        + Expr::make_const(1))
+    .reduce(make_mask(scope.bit_width));
+
+    let (proof, substituted_pre_restore, simplified_after_substitution) =
+        match simplify_mba(relation.clone(), scope.bit_width) {
+            Ok(residual) if residual == Expr::zero() => {
+                let substituted = pre_restore_result
+                    .clone()
+                    .replace_var(*right, &!Expr::Var(*left));
+                let simplified = simplify_mba(substituted.clone(), scope.bit_width)?;
+                (
+                    ComplementRelationProof::Proved,
+                    Some(substituted),
+                    Some(simplified),
+                )
+            }
+            Ok(residual) => (
+                ComplementRelationProof::NotProved { residual },
+                None,
+                None,
+            ),
+            Err(error) => (
+                ComplementRelationProof::ProofError(error),
+                None,
+                None,
+            ),
+        };
+
+    Ok(Some(DirectComplementExperiment {
+        scope: scope.scope,
+        left: *left,
+        right: *right,
+        left_definition,
+        right_definition,
+        relation,
+        proof,
+        substituted_pre_restore,
+        simplified_after_substitution,
+    }))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ExprCost {
     arithmetic_bitwise_alternations: usize,
@@ -1956,5 +2043,89 @@ mod tests {
         assert_eq!(experiment.proofs.len(), 1);
         assert!(experiment.rejections.is_empty());
         assert_eq!(experiment.simplified_after_substitution, Expr::zero());
+    }
+
+    #[test]
+    fn direct_complement_experiment_proves_and_substitutes_full_definitions() {
+        let x = Expr::Var(0.into());
+        let y = Expr::Var(1.into());
+        let b = Expr::Var(2.into());
+        let left: VarId = 3.into();
+        let right: VarId = 4.into();
+        let left_definition = x + y;
+        let right_definition = -left_definition.clone() - Expr::make_const(1);
+        let pre_restore = -b.clone()
+            + (b.clone() & Expr::Var(left))
+            + (b & Expr::Var(right));
+        let make_atom = |atom, definition: Expr| HiddenAtomTrace {
+            atom,
+            original: definition.clone(),
+            simplified: definition,
+            free_atoms: vec![0.into(), 1.into()],
+            dependent_atoms: vec![0.into()],
+            dependency_definition: Some(Expr::zero()),
+            dependency_kind: HiddenAtomDependencyKind::ArithmeticDependent,
+        };
+        let scope = HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore),
+            atoms: vec![
+                make_atom(left, left_definition),
+                make_atom(right, right_definition),
+            ],
+        };
+
+        let experiment = experiment_direct_complement_relation(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(experiment.proof, ComplementRelationProof::Proved);
+        assert_eq!(
+            experiment.simplified_after_substitution,
+            Some(Expr::zero())
+        );
+    }
+
+    #[test]
+    fn direct_complement_experiment_does_not_substitute_unproved_relation() {
+        let x = Expr::Var(0.into());
+        let b = Expr::Var(1.into());
+        let left: VarId = 2.into();
+        let right: VarId = 3.into();
+        let pre_restore = -b.clone()
+            + (b.clone() & Expr::Var(left))
+            + (b & Expr::Var(right));
+        let make_atom = |atom, definition: Expr| HiddenAtomTrace {
+            atom,
+            original: definition.clone(),
+            simplified: definition,
+            free_atoms: vec![0.into()],
+            dependent_atoms: Vec::new(),
+            dependency_definition: None,
+            dependency_kind: HiddenAtomDependencyKind::Root,
+        };
+        let scope = HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore),
+            atoms: vec![
+                make_atom(left, x.clone()),
+                make_atom(right, x),
+            ],
+        };
+
+        let experiment = experiment_direct_complement_relation(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            experiment.proof,
+            ComplementRelationProof::NotProved { .. }
+        ));
+        assert_eq!(experiment.substituted_pre_restore, None);
+        assert_eq!(experiment.simplified_after_substitution, None);
     }
 }

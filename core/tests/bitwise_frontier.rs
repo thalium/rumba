@@ -1,6 +1,13 @@
 #![cfg(feature = "parse")]
 
-use rumba_core::{expr::Expr, parser::parse_expr, simplify::simplify_mba};
+use rumba_core::{
+    expr::Expr,
+    parser::parse_expr,
+    simplify::{
+        ComplementRelationProof, DirectComplementExperiment, diagnose_hidden_atoms,
+        experiment_direct_complement_relation, simplify_mba,
+    },
+};
 
 const BIT_COUNT: u8 = 64;
 const QSYNTH_EA: &str = include_str!("../../third_party/dataset/qsynth_ea.csv");
@@ -54,6 +61,43 @@ fn assert_qsynth_case_is_resolved(line_number: usize) {
     });
 
     assert_simplifies_to_zero(simplified_ground_truth - simplified_mba);
+}
+
+fn qsynth_369_complement_experiment() -> DirectComplementExperiment {
+    let (mba, ground_truth) = qsynth_case(369);
+    let simplified_mba = simplify_mba(mba, BIT_COUNT).unwrap();
+    let simplified_ground_truth = simplify_mba(ground_truth, BIT_COUNT).unwrap();
+    let (residual, trace) = diagnose_hidden_atoms(
+        simplified_ground_truth - simplified_mba,
+        BIT_COUNT,
+    )
+    .unwrap();
+    let scope = trace
+        .iter()
+        .find(|scope| scope.input == residual)
+        .expect("missing final residual scope");
+
+    experiment_direct_complement_relation(scope)
+        .unwrap()
+        .expect("final scope does not have exactly two direct hidden atoms")
+}
+
+#[test]
+fn qsynth_369_hidden_atoms_are_semantic_complements() {
+    let experiment = qsynth_369_complement_experiment();
+
+    assert_eq!((experiment.left.0, experiment.right.0), (7, 9));
+    assert_eq!(experiment.proof, ComplementRelationProof::Proved);
+}
+
+#[test]
+fn qsynth_369_resolves_with_semantic_atom_complement() {
+    let experiment = qsynth_369_complement_experiment();
+
+    assert_eq!(
+        experiment.simplified_after_substitution,
+        Some(Expr::zero())
+    );
 }
 
 #[test]
