@@ -57,10 +57,10 @@ impl ExprWasm {
     }
 
     #[wasm_bindgen]
-    pub fn solve(&self, n: u8) -> Self {
-        Self {
-            inner: simplify::simplify_mba(self.inner.clone(), n),
-        }
+    pub fn solve(&self, n: u8) -> Result<ExprWasm, JsValue> {
+        simplify::simplify_mba(self.inner.clone(), n)
+            .map(|inner| ExprWasm { inner })
+            .map_err(|err| JsValue::from_str(&err.to_string()))
     }
 
     #[wasm_bindgen]

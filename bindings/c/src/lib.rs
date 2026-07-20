@@ -134,7 +134,13 @@ pub unsafe extern "C" fn rumba_expr_reduce(ptr: *mut c_void, n: u8) -> *mut c_vo
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_simplify(ptr: *mut c_void, n: u8) -> *mut c_void {
     let expr = unsafe { take_ownership(ptr) };
-    make_expr_ptr(simplify_mba(expr, n))
+    match simplify_mba(expr, n) {
+        Ok(expr) => make_expr_ptr(expr),
+        Err(err) => {
+            set_last_error(&err.to_string());
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Evaluates the epxression `ptr` modulo 2^`n`

@@ -1,4 +1,4 @@
-use clap::{Arg, Command, Parser, Subcommand, command};
+use clap::{Arg, Command, Parser, Subcommand};
 use rumba_core::{parser::parse_expr, simplify::simplify_mba, varint::make_mask};
 use std::path::PathBuf;
 
@@ -70,7 +70,13 @@ fn main() {
     match parse_expr(&expr) {
         Ok(e) => {
             println!("Simplify {}", e.repr(bits, mask, hex, false));
-            let sol = simplify_mba(e.clone(), bits);
+            let sol = match simplify_mba(e.clone(), bits) {
+                Ok(sol) => sol,
+                Err(err) => {
+                    eprintln!("Failed to simplify expression: {err}");
+                    return;
+                }
+            };
             println!("{}", sol.repr(bits, mask, hex, false));
 
             if matches.get_flag("test") {
