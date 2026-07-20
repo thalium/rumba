@@ -46,6 +46,15 @@ struct Trial {
     loki_resolved: usize,
     qsynth_resolved: usize,
     datasets: BTreeMap<&'static str, (usize, usize)>,
+    parent_tuples_considered: usize,
+    legacy_exact_proof_candidates: usize,
+    truth_tables_before_filter: usize,
+    truth_tables_rejected_by_observations: usize,
+    truth_tables_after_filter: usize,
+    exact_proof_attempts: usize,
+    exact_proofs_succeeded: usize,
+    first_round_resolutions: usize,
+    second_round_resolutions: usize,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -405,11 +414,24 @@ fn run_trial(cases: &[Case]) -> Trial {
         };
 
         let started = Instant::now();
-        let resolved = experiment_bitwise_dependency_closure(scope)
+        let experiment = experiment_bitwise_dependency_closure(scope)
             .ok()
-            .flatten()
-            .is_some_and(|experiment| experiment.residual_zero);
+            .flatten();
         trial.closure += started.elapsed();
+        if let Some(experiment) = &experiment {
+            let metrics = experiment.metrics;
+            trial.parent_tuples_considered += metrics.parent_tuples_considered;
+            trial.legacy_exact_proof_candidates += metrics.legacy_exact_proof_candidates;
+            trial.truth_tables_before_filter += metrics.truth_tables_before_filter;
+            trial.truth_tables_rejected_by_observations +=
+                metrics.truth_tables_rejected_by_observations;
+            trial.truth_tables_after_filter += metrics.truth_tables_after_filter;
+            trial.exact_proof_attempts += metrics.exact_proof_attempts;
+            trial.exact_proofs_succeeded += metrics.exact_proofs_succeeded;
+            trial.first_round_resolutions += metrics.first_round_resolutions;
+            trial.second_round_resolutions += metrics.second_round_resolutions;
+        }
+        let resolved = experiment.is_some_and(|experiment| experiment.residual_zero);
         if resolved {
             trial.resolved += 1;
             trial.datasets.entry(case.dataset).or_default().1 += 1;
@@ -468,6 +490,18 @@ fn main() {
             trial.ng - trial.resolved,
             trial.loki_resolved,
             trial.qsynth_resolved,
+        );
+        println!(
+            "  p7e parent_tuples={} legacy_exact_candidates={} tables_before_filter={} tables_rejected={} tables_after_filter={} exact_attempts={} exact_succeeded={} first_round_resolutions={} second_round_resolutions={}",
+            trial.parent_tuples_considered,
+            trial.legacy_exact_proof_candidates,
+            trial.truth_tables_before_filter,
+            trial.truth_tables_rejected_by_observations,
+            trial.truth_tables_after_filter,
+            trial.exact_proof_attempts,
+            trial.exact_proofs_succeeded,
+            trial.first_round_resolutions,
+            trial.second_round_resolutions,
         );
         for (dataset, (ng_before, resolved)) in &trial.datasets {
             println!(

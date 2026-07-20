@@ -22,7 +22,7 @@ simplificateur normal.
 La baisse globale est de 32 NG, soit 31,7 %. Les cinq régressions cibles sont
 résolues automatiquement et font partie des 19 résolutions QSynth.
 
-## Temps
+## Temps avant inférence des tables
 
 | Passage | Baseline | Trace | Fermeture | Surcoût total |
 | ---: | ---: | ---: | ---: | ---: |
@@ -39,3 +39,40 @@ La collecte diagnostique coûte environ 0,5 % du temps de référence. Le surco�
 provient donc de l'énumération exhaustive et des certifications exactes de la
 fermeture minimale. La couverture est positive, mais cette version ne satisfait
 pas une cible de surcoût inférieure à 5 % pour une activation corpus générale.
+
+## Après inférence déterministe des tables
+
+Les observations word-level rejettent les tables incompatibles, mais seule une
+preuve exacte peut encore certifier une dépendance. Mesure sur trois nouveaux
+passages :
+
+| Passage | Baseline | Trace | Fermeture | Surcoût total |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 3 657,497 ms | 17,875 ms | 15,149 ms | 0,903 % |
+| 2 | 3 713,391 ms | 17,203 ms | 14,988 ms | 0,867 % |
+| 3 | 3 742,556 ms | 16,743 ms | 14,746 ms | 0,841 % |
+
+Compteurs identiques sur les trois passages :
+
+| Compteur | Valeur |
+| --- | ---: |
+| Tuples de parents | 1 067 |
+| Candidats exacts de l'ancienne boucle | 10 220 |
+| Tables après canonicalisation, avant filtre | 6 632 |
+| Tables rejetées par observations | 6 569 |
+| Tables survivantes | 63 |
+| Preuves exactes lancées | 62 |
+| Preuves exactes réussies | 35 |
+| Résolutions au premier tour | 29 |
+| Résolutions au second tour | 3 |
+
+Médiane après optimisation :
+
+- fermeture : 14,988 ms, soit environ 47,6 fois plus rapide ;
+- surcoût de la fermeture seule : 0,404 % ;
+- surcoût complet avec collecte de trace : 0,867 % ;
+- réduction des appels exacts : environ 99,4 %.
+
+La couverture reste strictement identique : 32 résolutions, QSynth 19/19 et
+Loki 13. Un essai à trois tours n'a changé ni la couverture ni les compteurs ;
+la limite reste donc fixée à deux tours.

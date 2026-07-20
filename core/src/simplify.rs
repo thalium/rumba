@@ -1,11 +1,12 @@
 use std::{
     cell::{Cell, RefCell},
     cmp::max,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         Mutex,
         atomic::{AtomicI64, AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use crate::{
@@ -1163,6 +1164,52 @@ fn synthesize_binary_bitwise_function(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BinaryParent {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalTruthTable {
+    Constant(bool),
+    Unary {
+        parent: BinaryParent,
+        truth_table: u8,
+    },
+    Binary(u8),
+}
+
+fn canonicalize_binary_truth_table(truth_table: u8) -> CanonicalTruthTable {
+    debug_assert!(truth_table < 16);
+    let bit = |index: u32| (truth_table >> index) & 1u8;
+    let f00 = bit(0);
+    let f10 = bit(1);
+    let f01 = bit(2);
+    let f11 = bit(3);
+    if f00 == f10 && f00 == f01 && f00 == f11 {
+        CanonicalTruthTable::Constant(f00 != 0)
+    } else if f00 == f01 && f10 == f11 {
+        CanonicalTruthTable::Unary {
+            parent: BinaryParent::Left,
+            truth_table: f00 | (f10 << 1),
+        }
+    } else if f00 == f10 && f01 == f11 {
+        CanonicalTruthTable::Unary {
+            parent: BinaryParent::Right,
+            truth_table: f00 | (f01 << 1),
+        }
+    } else {
+        CanonicalTruthTable::Binary(truth_table)
+    }
+}
+
+fn swap_binary_truth_table(truth_table: u8) -> u8 {
+    (truth_table & 0b1001)
+        | ((truth_table & 0b0010) << 1)
+        | ((truth_table & 0b0100) >> 1)
+}
+
 const P7E_LITE_CLOSURE_PASSES: usize = 2;
 
 /// A word used as an opaque input by a certified P7e-lite dependency.
@@ -1183,6 +1230,11 @@ impl BitwiseWordRef {
 /// A unary or binary bitwise dependency proved exactly by P7e-lite.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CertifiedBitwiseDependency {
+    Constant {
+        target: VarId,
+        value: bool,
+        candidate: Expr,
+    },
     Unary {
         target: VarId,
         parent: BitwiseWordRef,
@@ -1201,29 +1253,44 @@ pub enum CertifiedBitwiseDependency {
 impl CertifiedBitwiseDependency {
     pub fn target(&self) -> VarId {
         match self {
-            Self::Unary { target, .. } | Self::Binary { target, .. } => *target,
+            Self::Constant { target, .. }
+            | Self::Unary { target, .. }
+            | Self::Binary { target, .. } => *target,
         }
     }
 
     pub fn candidate(&self) -> &Expr {
         match self {
-            Self::Unary { candidate, .. } | Self::Binary { candidate, .. } => candidate,
+            Self::Constant { candidate, .. }
+            | Self::Unary { candidate, .. }
+            | Self::Binary { candidate, .. } => candidate,
         }
     }
 
+    #[cfg(test)]
     fn parents(&self) -> Vec<BitwiseWordRef> {
         match self {
+            Self::Constant { .. } => Vec::new(),
             Self::Unary { parent, .. } => vec![*parent],
             Self::Binary { left, right, .. } => vec![*left, *right],
         }
     }
 
-    fn truth_table(&self) -> u8 {
-        match self {
-            Self::Unary { truth_table, .. } => *truth_table,
-            Self::Binary { truth_table, .. } => *truth_table,
-        }
-    }
+}
+
+/// Counters for the optimized, diagnostic-only P7e-lite search.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BitwiseDependencyClosureMetrics {
+    pub parent_tuples_considered: usize,
+    pub legacy_exact_proof_candidates: usize,
+    pub truth_tables_before_filter: usize,
+    pub truth_tables_rejected_by_observations: usize,
+    pub truth_tables_after_filter: usize,
+    pub exact_proof_attempts: usize,
+    pub exact_proofs_succeeded: usize,
+    pub first_round_resolutions: usize,
+    pub second_round_resolutions: usize,
+    pub closure_time_micros: u128,
 }
 
 /// Output of the minimal, diagnostic-only P7e-lite closure.
@@ -1232,6 +1299,7 @@ pub struct BitwiseDependencyClosureExperiment {
     pub scope: usize,
     pub direct_atoms: Vec<VarId>,
     pub closure_iterations: usize,
+    pub metrics: BitwiseDependencyClosureMetrics,
     pub dependencies: Vec<CertifiedBitwiseDependency>,
     pub substituted_pre_restore: Expr,
     pub restored_after_substitution: Expr,
@@ -1321,6 +1389,248 @@ fn p7e_parent_pairs(words: &[BitwiseWordRef]) -> Vec<(BitwiseWordRef, BitwiseWor
     pairs
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum BitwiseCandidateSpec {
+    Constant(bool),
+    Unary {
+        parent: BitwiseWordRef,
+        truth_table: u8,
+    },
+    Binary {
+        left: BitwiseWordRef,
+        right: BitwiseWordRef,
+        truth_table: u8,
+    },
+}
+
+impl BitwiseCandidateSpec {
+    fn expression(self, mask: u64) -> Expr {
+        match self {
+            Self::Constant(value) => {
+                Expr::make_const(if value { mask } else { 0 })
+            }
+            Self::Unary {
+                parent,
+                truth_table,
+            } => synthesize_unary_bitwise_function(
+                Expr::Var(parent.atom()),
+                truth_table,
+                mask,
+            ),
+            Self::Binary {
+                left,
+                right,
+                truth_table,
+            } => synthesize_binary_bitwise_function(
+                Expr::Var(left.atom()),
+                Expr::Var(right.atom()),
+                truth_table,
+                mask,
+            ),
+        }
+    }
+
+    fn parents(self) -> Vec<BitwiseWordRef> {
+        match self {
+            Self::Constant(_) => Vec::new(),
+            Self::Unary { parent, .. } => vec![parent],
+            Self::Binary { left, right, .. } => vec![left, right],
+        }
+    }
+
+    fn truth_table(self) -> u8 {
+        match self {
+            Self::Constant(value) => u8::from(value),
+            Self::Unary { truth_table, .. }
+            | Self::Binary { truth_table, .. } => truth_table,
+        }
+    }
+}
+
+fn canonical_binary_candidate(
+    left: BitwiseWordRef,
+    right: BitwiseWordRef,
+    truth_table: u8,
+) -> BitwiseCandidateSpec {
+    match canonicalize_binary_truth_table(truth_table) {
+        CanonicalTruthTable::Constant(value) => BitwiseCandidateSpec::Constant(value),
+        CanonicalTruthTable::Unary {
+            parent,
+            truth_table,
+        } => BitwiseCandidateSpec::Unary {
+            parent: match parent {
+                BinaryParent::Left => left,
+                BinaryParent::Right => right,
+            },
+            truth_table,
+        },
+        CanonicalTruthTable::Binary(truth_table) => {
+            if left <= right {
+                BitwiseCandidateSpec::Binary {
+                    left,
+                    right,
+                    truth_table,
+                }
+            } else {
+                BitwiseCandidateSpec::Binary {
+                    left: right,
+                    right: left,
+                    truth_table: swap_binary_truth_table(truth_table),
+                }
+            }
+        }
+    }
+}
+
+struct P7eObservationSamples {
+    target: Vec<u64>,
+    parents: HashMap<BitwiseWordRef, Vec<u64>>,
+    bit_width: u8,
+    mask: u64,
+}
+
+impl P7eObservationSamples {
+    fn target_is_constant(&self, value: bool) -> bool {
+        let expected = if value { self.mask } else { 0 };
+        self.target.iter().all(|word| *word == expected)
+    }
+
+    fn infer_unary_tables(&self, parent: BitwiseWordRef) -> Vec<u8> {
+        let mut observed = [None; 2];
+        for (target, parent) in self.target.iter().zip(&self.parents[&parent]) {
+            for bit in 0..self.bit_width {
+                let input = ((parent >> bit) & 1) as usize;
+                let output = ((target >> bit) & 1) != 0;
+                match observed[input] {
+                    Some(previous) if previous != output => return Vec::new(),
+                    Some(_) => {}
+                    None => observed[input] = Some(output),
+                }
+            }
+        }
+        complete_observed_truth_table(&observed)
+    }
+
+    fn infer_binary_tables(
+        &self,
+        left: BitwiseWordRef,
+        right: BitwiseWordRef,
+    ) -> Vec<u8> {
+        let mut observed = [None; 4];
+        for ((target, left), right) in self
+            .target
+            .iter()
+            .zip(&self.parents[&left])
+            .zip(&self.parents[&right])
+        {
+            for bit in 0..self.bit_width {
+                let x = ((left >> bit) & 1) as usize;
+                let y = ((right >> bit) & 1) as usize;
+                let input = x | (y << 1);
+                let output = ((target >> bit) & 1) != 0;
+                match observed[input] {
+                    Some(previous) if previous != output => return Vec::new(),
+                    Some(_) => {}
+                    None => observed[input] = Some(output),
+                }
+            }
+        }
+        complete_observed_truth_table(&observed)
+    }
+}
+
+fn complete_observed_truth_table(observed: &[Option<bool>]) -> Vec<u8> {
+    (0..(1u8 << observed.len()))
+        .filter(|truth_table| {
+            observed.iter().enumerate().all(|(input, output)| {
+                output.is_none_or(|output| {
+                    ((*truth_table >> input) & 1 != 0) == output
+                })
+            })
+        })
+        .collect()
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn deterministic_root_values(max_var: usize, sample: usize, mask: u64) -> Vec<u64> {
+    let patterns = [
+        0,
+        mask,
+        1 & mask,
+        mask.wrapping_sub(1) & mask,
+        0xaaaa_aaaa_aaaa_aaaa & mask,
+        0x5555_5555_5555_5555 & mask,
+    ];
+    (0..=max_var)
+        .map(|atom| {
+            if sample < patterns.len() {
+                patterns[sample]
+            } else {
+                splitmix64(
+                    0x726f_6f74_5f70_3765
+                        ^ ((sample as u64) << 32)
+                        ^ atom as u64,
+                ) & mask
+            }
+        })
+        .collect()
+}
+
+fn make_p7e_observation_samples(
+    target: &Expr,
+    parents: &[BitwiseWordRef],
+    atoms: &HashMap<VarId, &HiddenAtomTrace>,
+    dependencies: &[CertifiedBitwiseDependency],
+    bit_width: u8,
+) -> P7eObservationSamples {
+    const SAMPLE_COUNT: usize = 12;
+    let mask = make_mask(bit_width);
+    let expanded_parents: HashMap<_, _> = parents
+        .iter()
+        .copied()
+        .map(|parent| {
+            (
+                parent,
+                expand_p7e_expression(Expr::Var(parent.atom()), atoms, dependencies),
+            )
+        })
+        .collect();
+    let max_var = std::iter::once(target)
+        .chain(expanded_parents.values())
+        .flat_map(Expr::get_vars)
+        .map(|atom| atom.0)
+        .max()
+        .unwrap_or(0);
+    let mut target_samples = Vec::with_capacity(SAMPLE_COUNT);
+    let mut parent_samples: HashMap<_, Vec<_>> = parents
+        .iter()
+        .copied()
+        .map(|parent| (parent, Vec::with_capacity(SAMPLE_COUNT)))
+        .collect();
+    for sample in 0..SAMPLE_COUNT {
+        let values = deterministic_root_values(max_var, sample, mask);
+        target_samples.push(target.eval(&values).get(mask));
+        for (parent, expression) in &expanded_parents {
+            parent_samples
+                .get_mut(parent)
+                .unwrap()
+                .push(expression.eval(&values).get(mask));
+        }
+    }
+    P7eObservationSamples {
+        target: target_samples,
+        parents: parent_samples,
+        bit_width,
+        mask,
+    }
+}
+
 fn expand_p7e_expression(
     expression: Expr,
     atoms: &HashMap<VarId, &HiddenAtomTrace>,
@@ -1335,48 +1645,120 @@ fn expand_p7e_expression(
 fn certify_p7e_candidate(
     target: VarId,
     scoped_definition: &Expr,
-    candidate: Expr,
-    parents: Vec<BitwiseWordRef>,
-    truth_table: u8,
-    unary: bool,
+    specification: BitwiseCandidateSpec,
     bit_width: u8,
     atoms: &HashMap<VarId, &HiddenAtomTrace>,
     dependencies: &[CertifiedBitwiseDependency],
+    metrics: &mut BitwiseDependencyClosureMetrics,
 ) -> Option<CertifiedBitwiseDependency> {
     let mask = make_mask(bit_width);
+    let candidate = specification.expression(mask);
     let scoped_candidate = expand_p7e_expression(candidate.clone(), atoms, dependencies);
     let scoped_relation = (scoped_definition.clone() - scoped_candidate).reduce(mask);
+    metrics.exact_proof_attempts += 1;
     if simplify_mba(scoped_relation, bit_width) != Ok(Expr::zero()) {
         return None;
     }
+    metrics.exact_proofs_succeeded += 1;
 
-    if unary {
-        Some(CertifiedBitwiseDependency::Unary {
+    Some(match specification {
+        BitwiseCandidateSpec::Constant(value) => {
+            CertifiedBitwiseDependency::Constant {
+                target,
+                value,
+                candidate,
+            }
+        }
+        BitwiseCandidateSpec::Unary {
+            parent,
+            truth_table,
+        } => CertifiedBitwiseDependency::Unary {
             target,
-            parent: parents[0],
+            parent,
             truth_table,
             candidate,
-        })
-    } else {
-        Some(CertifiedBitwiseDependency::Binary {
+        },
+        BitwiseCandidateSpec::Binary {
+            left,
+            right,
+            truth_table,
+        } => CertifiedBitwiseDependency::Binary {
             target,
-            left: parents[0],
-            right: parents[1],
+            left,
+            right,
             truth_table,
             candidate,
-        })
+        },
+    })
+}
+
+fn expression_depth(expression: &Expr) -> usize {
+    match expression {
+        Expr::Var(_) | Expr::Const(_) => 1,
+        Expr::Not(inner) | Expr::Scale(_, inner) => 1 + expression_depth(inner),
+        Expr::And(terms)
+        | Expr::Or(terms)
+        | Expr::Xor(terms)
+        | Expr::Add(terms)
+        | Expr::Mul(terms) => {
+            1 + terms.iter().map(expression_depth).max().unwrap_or(0)
+        }
     }
 }
 
-fn p7e_dependency_score(
-    dependency: &CertifiedBitwiseDependency,
-) -> (usize, usize, u8, Vec<BitwiseWordRef>) {
+fn p7e_candidate_score(
+    specification: BitwiseCandidateSpec,
+    mask: u64,
+) -> (usize, usize, usize, Vec<BitwiseWordRef>, u8) {
+    let expression = specification.expression(mask);
     (
-        dependency.parents().len(),
-        dependency.candidate().size(),
-        dependency.truth_table(),
-        dependency.parents(),
+        specification.parents().len(),
+        expression.size(),
+        expression_depth(&expression),
+        specification.parents(),
+        specification.truth_table(),
     )
+}
+
+fn infer_p7e_candidates(
+    samples: &P7eObservationSamples,
+    parents: &[BitwiseWordRef],
+    metrics: &mut BitwiseDependencyClosureMetrics,
+) -> Vec<BitwiseCandidateSpec> {
+    let pairs = p7e_parent_pairs(parents);
+    metrics.parent_tuples_considered += parents.len() + pairs.len();
+    metrics.legacy_exact_proof_candidates += 4 * parents.len() + 16 * pairs.len();
+    let before = 2 + 2 * parents.len() + 10 * pairs.len();
+    metrics.truth_tables_before_filter += before;
+
+    let mut candidates = BTreeSet::new();
+    for value in [false, true] {
+        if samples.target_is_constant(value) {
+            candidates.insert(BitwiseCandidateSpec::Constant(value));
+        }
+    }
+    for parent in parents {
+        for truth_table in samples.infer_unary_tables(*parent) {
+            if matches!(truth_table, 0b01 | 0b10) {
+                candidates.insert(BitwiseCandidateSpec::Unary {
+                    parent: *parent,
+                    truth_table,
+                });
+            }
+        }
+    }
+    for (left, right) in pairs {
+        for truth_table in samples.infer_binary_tables(left, right) {
+            let candidate = canonical_binary_candidate(left, right, truth_table);
+            if matches!(candidate, BitwiseCandidateSpec::Binary { .. }) {
+                candidates.insert(candidate);
+            }
+        }
+    }
+
+    metrics.truth_tables_after_filter += candidates.len();
+    metrics.truth_tables_rejected_by_observations += before - candidates.len();
+    candidates.into_iter().collect()
 }
 
 /// Search a bounded unary/binary closure over the direct opaque words in one
@@ -1384,6 +1766,7 @@ fn p7e_dependency_score(
 pub fn experiment_bitwise_dependency_closure(
     scope: &HiddenScopeTrace,
 ) -> Result<Option<BitwiseDependencyClosureExperiment>, SolveError> {
+    let started = Instant::now();
     let Some(pre_restore_result) = &scope.pre_restore_result else {
         return Ok(None);
     };
@@ -1399,14 +1782,29 @@ pub fn experiment_bitwise_dependency_closure(
     let mask = make_mask(scope.bit_width);
     let mut dependencies = Vec::new();
     let mut closure_iterations = 0;
+    let mut metrics = BitwiseDependencyClosureMetrics::default();
+    let mut final_state = None;
 
-    for _ in 0..P7E_LITE_CLOSURE_PASSES {
+    for round in 0..P7E_LITE_CLOSURE_PASSES {
+        let rewritten_pre_restore =
+            apply_certified_dependencies(pre_restore_result.clone(), &dependencies);
+        let mut round_direct_atoms: Vec<_> = rewritten_pre_restore
+            .get_vars()
+            .into_iter()
+            .filter(|atom| hidden_atoms.contains(atom))
+            .filter(|atom| {
+                !dependencies
+                    .iter()
+                    .any(|dependency| dependency.target() == *atom)
+            })
+            .collect();
+        round_direct_atoms.sort();
+        if round_direct_atoms.is_empty() {
+            break;
+        }
+
         let mut newly_proved = Vec::new();
-        for target in direct_atoms.iter().copied().filter(|target| {
-            !dependencies
-                .iter()
-                .any(|dependency: &CertifiedBitwiseDependency| dependency.target() == *target)
-        }) {
+        for target in round_direct_atoms.iter().copied() {
             let atom = atoms[&target];
             let base_definition = atom
                 .dependency_definition
@@ -1427,8 +1825,8 @@ pub fn experiment_bitwise_dependency_closure(
             }
             let parents = collect_p7e_parent_words(
                 target,
-                pre_restore_result,
-                &direct_atoms,
+                &rewritten_pre_restore,
+                &round_direct_atoms,
                 &hidden_atoms,
                 &dependencies,
             );
@@ -1437,60 +1835,28 @@ pub fn experiment_bitwise_dependency_closure(
                 &atoms,
                 &dependencies,
             );
-            let mut candidates = Vec::new();
-
-            for parent in &parents {
-                for truth_table in 0..4 {
-                    let candidate = synthesize_unary_bitwise_function(
-                        Expr::Var(parent.atom()),
-                        truth_table,
-                        mask,
-                    );
-                    if let Some(dependency) = certify_p7e_candidate(
-                        target,
-                        &scoped_definition,
-                        candidate,
-                        vec![*parent],
-                        truth_table,
-                        true,
-                        scope.bit_width,
-                        &atoms,
-                        &dependencies,
-                    ) {
-                        candidates.push(dependency);
-                    }
+            let samples = make_p7e_observation_samples(
+                &scoped_definition,
+                &parents,
+                &atoms,
+                &dependencies,
+                scope.bit_width,
+            );
+            let mut candidates = infer_p7e_candidates(&samples, &parents, &mut metrics);
+            candidates.sort_by_key(|candidate| p7e_candidate_score(*candidate, mask));
+            for candidate in candidates {
+                if let Some(dependency) = certify_p7e_candidate(
+                    target,
+                    &scoped_definition,
+                    candidate,
+                    scope.bit_width,
+                    &atoms,
+                    &dependencies,
+                    &mut metrics,
+                ) {
+                    newly_proved.push(dependency);
+                    break;
                 }
-            }
-
-            for (left, right) in p7e_parent_pairs(&parents) {
-                for truth_table in 0..16 {
-                    let candidate = synthesize_binary_bitwise_function(
-                        Expr::Var(left.atom()),
-                        Expr::Var(right.atom()),
-                        truth_table,
-                        mask,
-                    );
-                    if let Some(dependency) = certify_p7e_candidate(
-                        target,
-                        &scoped_definition,
-                        candidate,
-                        vec![left, right],
-                        truth_table,
-                        false,
-                        scope.bit_width,
-                        &atoms,
-                        &dependencies,
-                    ) {
-                        candidates.push(dependency);
-                    }
-                }
-            }
-
-            if let Some(best) = candidates
-                .into_iter()
-                .min_by_key(p7e_dependency_score)
-            {
-                newly_proved.push(best);
             }
         }
 
@@ -1500,19 +1866,43 @@ pub fn experiment_bitwise_dependency_closure(
         newly_proved.sort_by_key(CertifiedBitwiseDependency::target);
         dependencies.extend(newly_proved);
         closure_iterations += 1;
+
+        let substituted =
+            apply_certified_dependencies(pre_restore_result.clone(), &dependencies);
+        let restored = expand_scope_hidden_atoms(substituted.clone(), &atoms);
+        let simplified = simplify_mba(restored.clone(), scope.bit_width)?;
+        let residual_zero = simplified == Expr::zero();
+        final_state = Some((substituted, restored, simplified));
+        if residual_zero {
+            if round == 0 {
+                metrics.first_round_resolutions += 1;
+            } else {
+                metrics.second_round_resolutions += 1;
+            }
+            break;
+        }
     }
 
-    let substituted_pre_restore =
-        apply_certified_dependencies(pre_restore_result.clone(), &dependencies);
-    let restored_after_substitution =
-        expand_scope_hidden_atoms(substituted_pre_restore.clone(), &atoms);
-    let simplified_after_substitution =
-        simplify_mba(restored_after_substitution.clone(), scope.bit_width)?;
+    let (
+        substituted_pre_restore,
+        restored_after_substitution,
+        simplified_after_substitution,
+    ) = if let Some(state) = final_state {
+        state
+    } else {
+        let substituted =
+            apply_certified_dependencies(pre_restore_result.clone(), &dependencies);
+        let restored = expand_scope_hidden_atoms(substituted.clone(), &atoms);
+        let simplified = simplify_mba(restored.clone(), scope.bit_width)?;
+        (substituted, restored, simplified)
+    };
+    metrics.closure_time_micros = started.elapsed().as_micros();
 
     Ok(Some(BitwiseDependencyClosureExperiment {
         scope: scope.scope,
         direct_atoms,
         closure_iterations,
+        metrics,
         dependencies,
         substituted_pre_restore,
         restored_after_substitution,
@@ -2949,6 +3339,78 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn all_unary_bitwise_tables_are_correct_at_widths_one_through_four() {
+        for bit_width in 1..=4 {
+            let mask = make_mask(bit_width);
+            for truth_table in 0..4 {
+                let candidate = synthesize_unary_bitwise_function(
+                    Expr::Var(0.into()),
+                    truth_table,
+                    mask,
+                );
+                for value in 0..=mask {
+                    let expected = (0..bit_width).fold(0, |output, bit| {
+                        let input = ((value >> bit) & 1) as u8;
+                        output | (((truth_table >> input) as u64 & 1) << bit)
+                    });
+                    assert_eq!(candidate.eval(&[value]).get(mask), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_binary_bitwise_tables_are_correct_at_widths_one_through_four() {
+        for bit_width in 1..=4 {
+            let mask = make_mask(bit_width);
+            for truth_table in 0..16 {
+                let candidate = synthesize_binary_bitwise_function(
+                    Expr::Var(0.into()),
+                    Expr::Var(1.into()),
+                    truth_table,
+                    mask,
+                );
+                for left in 0..=mask {
+                    for right in 0..=mask {
+                        let expected = (0..bit_width).fold(0, |output, bit| {
+                            let x = ((left >> bit) & 1) as u8;
+                            let y = ((right >> bit) & 1) as u8;
+                            let input = x | (y << 1);
+                            output | (((truth_table >> input) as u64 & 1) << bit)
+                        });
+                        assert_eq!(candidate.eval(&[left, right]).get(mask), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn binary_table_ignoring_one_parent_is_canonicalized_to_unary() {
+        assert_eq!(
+            canonicalize_binary_truth_table(0b1010),
+            CanonicalTruthTable::Unary {
+                parent: BinaryParent::Left,
+                truth_table: 0b10,
+            }
+        );
+        assert_eq!(
+            canonicalize_binary_truth_table(0b1100),
+            CanonicalTruthTable::Unary {
+                parent: BinaryParent::Right,
+                truth_table: 0b10,
+            }
+        );
+    }
+
+    #[test]
+    fn swapping_binary_parents_permutes_middle_truth_table_entries() {
+        assert_eq!(swap_binary_truth_table(0b0010), 0b0100);
+        assert_eq!(swap_binary_truth_table(0b0100), 0b0010);
+        assert_eq!(swap_binary_truth_table(0b0110), 0b0110);
     }
 
     fn p7e_test_atom(atom: usize, definition: Expr) -> HiddenAtomTrace {
