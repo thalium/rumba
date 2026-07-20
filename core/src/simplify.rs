@@ -367,7 +367,8 @@ struct MBASolver<'a, C: LinearCache> {
 }
 
 fn is_bitwise_constant(c: VarInt, mask: u64) -> bool {
-    (c.get(mask) == 0) || (c.get(mask) & mask == 0)
+    let c = c.get(mask);
+    c == 0 || c == mask
 }
 
 impl<'a, C: LinearCache> MBASolver<'a, C> {
@@ -965,7 +966,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "known failure: all-ones is rejected as a bitwise constant"]
     fn recognizes_zero_and_all_ones_as_bitwise_constants() {
         let mask = make_mask(8);
         assert!(is_bitwise_constant(VarInt::ZERO, mask));
