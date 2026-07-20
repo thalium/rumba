@@ -603,8 +603,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             Expr::Var(v) => {
                 // The sign correction -> see paper
                 let s = if self.degree & 1 == 0 { u64::MAX } else { 1 };
-                // ERROR: this should be a t
-                Ok(s * Expr::Var((v.0 % self.degree).into()))
+                Ok(s * Expr::Var((v.0 % self.t).into()))
             }
 
             Expr::Const(_) => {
@@ -973,7 +972,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known failure: inverse PCT uses degree instead of variable count"]
     fn inverse_pct_round_trip_preserves_variable_index() {
         let cache = LocalCache::new();
         let mut solver = MBASolver::new(&cache, &Expr::Var(2.into()), 8);
