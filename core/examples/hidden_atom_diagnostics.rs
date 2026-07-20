@@ -7,7 +7,7 @@ use rumba_core::{
         ComplementRelationProof, DirectDependencyRejectReason, HiddenAtomDependencyKind,
         HiddenScopeTrace, SemanticAliasProof, diagnose_hidden_atoms,
         experiment_direct_bitwise_dependencies, experiment_direct_complement_relation,
-        experiment_guided_semantic_aliases,
+        experiment_guided_semantic_aliases, experiment_guided_ternary_relations,
     },
 };
 
@@ -236,6 +236,14 @@ fn main() {
                     );
                 }
                 if verbose {
+                    println!(
+                        "  substituted_pre_restore={}",
+                        experiment.substituted_pre_restore
+                    );
+                    println!(
+                        "  simplified_after_substitution={}",
+                        experiment.simplified_after_substitution
+                    );
                     for attempt in &experiment.attempts {
                         println!(
                             "  attempt left=v{} right=v{} kind={:?} proof={:?} relation={}",
@@ -245,6 +253,68 @@ fn main() {
                             attempt.proof,
                             attempt.relation,
                         );
+                    }
+                }
+
+                if line == 260 {
+                    let Some(ternary) = experiment_guided_ternary_relations(scope)
+                        .unwrap_or_else(|err| {
+                            panic!("P7f-micro failed in scope {}: {err}", scope.scope)
+                        })
+                    else {
+                        continue;
+                    };
+                    let proved = ternary
+                        .attempts
+                        .iter()
+                        .filter(|attempt| attempt.proof == SemanticAliasProof::Proved)
+                        .count();
+                    let proof_errors = ternary
+                        .attempts
+                        .iter()
+                        .filter(|attempt| {
+                            matches!(attempt.proof, SemanticAliasProof::ProofError(_))
+                        })
+                        .count();
+                    println!(
+                        "p7f_micro line=260 scope={} remaining_atoms={:?} occurrence_counts={:?} attempts={} proved={} proof_errors={} substitutions={} result_nodes={} residual_zero={}",
+                        ternary.scope,
+                        ternary.remaining_atoms,
+                        ternary.occurrence_counts,
+                        ternary.attempts.len(),
+                        proved,
+                        proof_errors,
+                        ternary.certified_relations.len(),
+                        ternary.simplified_after_substitution.size(),
+                        ternary.simplified_after_substitution == Expr::zero(),
+                    );
+                    println!(
+                        "  residual_after_binary_aliases={}",
+                        ternary.residual_after_binary_aliases
+                    );
+                    for relation in &ternary.certified_relations {
+                        println!(
+                            "  ternary atoms={:?} kind={:?} target=v{} replacement={}",
+                            relation.atoms,
+                            relation.kind,
+                            relation.target,
+                            relation.replacement,
+                        );
+                    }
+                    println!(
+                        "  simplified_after_ternary={}",
+                        ternary.simplified_after_substitution
+                    );
+                    if verbose {
+                        for attempt in &ternary.attempts {
+                            println!(
+                                "  ternary_attempt atoms={:?} kind={:?} proof={:?} relation={}",
+                                attempt.atoms,
+                                attempt.kind,
+                                attempt.proof,
+                                attempt.relation,
+                            );
+                        }
                     }
                 }
             }

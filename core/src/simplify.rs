@@ -815,6 +815,251 @@ pub fn experiment_guided_semantic_aliases(
     }))
 }
 
+/// The three structure-guided ternary relations allowed by P7f-micro.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidedTernaryRelation {
+    OneMinusTwo,
+    TwoMinusOne,
+    ComplementSum,
+}
+
+fn make_guided_ternary_relation(
+    kind: GuidedTernaryRelation,
+    a: &Expr,
+    b: &Expr,
+    c: &Expr,
+    mask: u64,
+) -> Expr {
+    match kind {
+        GuidedTernaryRelation::OneMinusTwo => {
+            a.clone() - b.clone() - c.clone()
+        }
+        GuidedTernaryRelation::TwoMinusOne => {
+            a.clone() + b.clone() - c.clone()
+        }
+        GuidedTernaryRelation::ComplementSum => {
+            a.clone() + b.clone() + c.clone() + Expr::make_const(1)
+        }
+    }
+    .reduce(mask)
+}
+
+fn count_selected_atom_occurrences(
+    expression: &Expr,
+    selected_atoms: &HashSet<VarId>,
+    counts: &mut HashMap<VarId, usize>,
+) {
+    match expression {
+        Expr::Var(atom) => {
+            if selected_atoms.contains(atom) {
+                *counts.entry(*atom).or_default() += 1;
+            }
+        }
+        Expr::Not(inner) | Expr::Scale(_, inner) => {
+            count_selected_atom_occurrences(inner, selected_atoms, counts);
+        }
+        Expr::And(terms)
+        | Expr::Or(terms)
+        | Expr::Xor(terms)
+        | Expr::Add(terms)
+        | Expr::Mul(terms) => {
+            for term in terms {
+                count_selected_atom_occurrences(term, selected_atoms, counts);
+            }
+        }
+        Expr::Const(_) => {}
+    }
+}
+
+fn replace_vars_simultaneously(
+    expression: Expr,
+    replacements: &HashMap<VarId, Expr>,
+) -> Expr {
+    match expression {
+        Expr::Var(atom) => replacements
+            .get(&atom)
+            .cloned()
+            .unwrap_or(Expr::Var(atom)),
+        expression => expression.map(|child| {
+            replace_vars_simultaneously(child, replacements)
+        }),
+    }
+}
+
+/// One exact P7f-micro ternary proof attempt.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuidedTernaryAttempt {
+    pub atoms: [VarId; 3],
+    pub kind: GuidedTernaryRelation,
+    pub relation: Expr,
+    pub proof: SemanticAliasProof,
+}
+
+/// One certified ternary relation selected for simultaneous substitution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertifiedGuidedTernaryRelation {
+    pub atoms: [VarId; 3],
+    pub kind: GuidedTernaryRelation,
+    pub target: VarId,
+    pub replacement: Expr,
+}
+
+/// Result of P7f-micro after the binary P7d aliases and one ternary pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuidedTernaryExperiment {
+    pub scope: usize,
+    pub binary_aliases: Vec<CertifiedSemanticAlias>,
+    pub residual_after_binary_aliases: Expr,
+    pub remaining_atoms: Vec<VarId>,
+    pub occurrence_counts: Vec<(VarId, usize)>,
+    pub attempts: Vec<GuidedTernaryAttempt>,
+    pub certified_relations: Vec<CertifiedGuidedTernaryRelation>,
+    pub substituted_residual: Expr,
+    pub simplified_after_substitution: Expr,
+}
+
+/// Try only the three coefficient-bounded ternary relations allowed by
+/// P7f-micro on the three or four hidden atoms left after P7d substitutions.
+pub fn experiment_guided_ternary_relations(
+    scope: &HiddenScopeTrace,
+) -> Result<Option<GuidedTernaryExperiment>, SolveError> {
+    let Some(binary_experiment) = experiment_guided_semantic_aliases(scope)? else {
+        return Ok(None);
+    };
+    let residual_after_binary_aliases =
+        binary_experiment.simplified_after_substitution.clone();
+    let atoms: HashMap<_, _> = scope.atoms.iter().map(|atom| (atom.atom, atom)).collect();
+    let mut remaining_atoms: Vec<_> = residual_after_binary_aliases
+        .get_vars()
+        .into_iter()
+        .filter(|atom| atoms.contains_key(atom))
+        .collect();
+    let remaining_set: HashSet<_> = remaining_atoms.iter().copied().collect();
+    let mut counts = HashMap::new();
+    count_selected_atom_occurrences(
+        &residual_after_binary_aliases,
+        &remaining_set,
+        &mut counts,
+    );
+    remaining_atoms.sort_by_key(|atom| {
+        (std::cmp::Reverse(counts.get(atom).copied().unwrap_or(0)), *atom)
+    });
+    let occurrence_counts = remaining_atoms
+        .iter()
+        .map(|atom| (*atom, counts.get(atom).copied().unwrap_or(0)))
+        .collect();
+
+    let cache = LocalCache::new();
+    let mut definitions = HashMap::new();
+    for atom in &remaining_atoms {
+        let definition = atoms[atom].simplified.clone();
+        let simplified = simplify_mba_with_cache(
+            &cache,
+            definition.clone(),
+            scope.bit_width,
+        )
+        .unwrap_or(definition);
+        definitions.insert(*atom, simplified);
+    }
+
+    let mut attempts = Vec::new();
+    let mut certified_relations = Vec::new();
+    let mut substituted_targets = HashSet::new();
+    if (3..=4).contains(&remaining_atoms.len()) {
+        for first in 0..remaining_atoms.len() - 2 {
+            for second in first + 1..remaining_atoms.len() - 1 {
+                for third in second + 1..remaining_atoms.len() {
+                    let selected = [
+                        remaining_atoms[first],
+                        remaining_atoms[second],
+                        remaining_atoms[third],
+                    ];
+                    let [a, b, c] = selected.map(|atom| Expr::Var(atom));
+                    for kind in [
+                        GuidedTernaryRelation::OneMinusTwo,
+                        GuidedTernaryRelation::TwoMinusOne,
+                        GuidedTernaryRelation::ComplementSum,
+                    ] {
+                        let relation = make_guided_ternary_relation(
+                            kind,
+                            &definitions[&selected[0]],
+                            &definitions[&selected[1]],
+                            &definitions[&selected[2]],
+                            make_mask(scope.bit_width),
+                        );
+                        let proof = match simplify_mba_with_cache(
+                            &cache,
+                            relation.clone(),
+                            scope.bit_width,
+                        ) {
+                            Ok(residual) if residual == Expr::zero() => {
+                                let (target, replacement) = match kind {
+                                    GuidedTernaryRelation::OneMinusTwo => {
+                                        (selected[0], b.clone() + c.clone())
+                                    }
+                                    GuidedTernaryRelation::TwoMinusOne => {
+                                        (selected[2], a.clone() + b.clone())
+                                    }
+                                    GuidedTernaryRelation::ComplementSum => (
+                                        selected[2],
+                                        -a.clone() - b.clone() - Expr::make_const(1),
+                                    ),
+                                };
+                                if substituted_targets.insert(target) {
+                                    certified_relations.push(
+                                        CertifiedGuidedTernaryRelation {
+                                            atoms: selected,
+                                            kind,
+                                            target,
+                                            replacement: replacement
+                                                .reduce(make_mask(scope.bit_width)),
+                                        },
+                                    );
+                                }
+                                SemanticAliasProof::Proved
+                            }
+                            Ok(residual) => SemanticAliasProof::NotProved { residual },
+                            Err(error) => SemanticAliasProof::ProofError(error),
+                        };
+                        attempts.push(GuidedTernaryAttempt {
+                            atoms: selected,
+                            kind,
+                            relation,
+                            proof,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let replacements: HashMap<_, _> = certified_relations
+        .iter()
+        .map(|relation| (relation.target, relation.replacement.clone()))
+        .collect();
+    let substituted_residual = replace_vars_simultaneously(
+        residual_after_binary_aliases.clone(),
+        &replacements,
+    );
+    let simplified_after_substitution = simplify_mba_with_cache(
+        &cache,
+        substituted_residual.clone(),
+        scope.bit_width,
+    )?;
+
+    Ok(Some(GuidedTernaryExperiment {
+        scope: scope.scope,
+        binary_aliases: binary_experiment.certified_aliases,
+        residual_after_binary_aliases,
+        remaining_atoms,
+        occurrence_counts,
+        attempts,
+        certified_relations,
+        substituted_residual,
+        simplified_after_substitution,
+    }))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ExprCost {
     arithmetic_bitwise_alternations: usize,
@@ -2590,5 +2835,89 @@ mod tests {
             SemanticAlias::ArithmeticOpposite
         );
         assert_eq!(opposite.simplified_after_substitution, Expr::zero());
+    }
+
+    #[test]
+    fn guided_ternary_relation_builds_one_minus_two_identity() {
+        let x = Expr::Var(0.into());
+        let y = Expr::Var(1.into());
+        let a = x.clone() + y.clone();
+        let relation = make_guided_ternary_relation(
+            GuidedTernaryRelation::OneMinusTwo,
+            &a,
+            &x,
+            &y,
+            make_mask(64),
+        );
+
+        assert_eq!(simplify_mba(relation, 64), Ok(Expr::zero()));
+    }
+
+    #[test]
+    fn guided_ternary_relation_builds_all_allowed_forms() {
+        let x = Expr::Var(0.into());
+        let y = Expr::Var(1.into());
+        let sum = x.clone() + y.clone();
+        let complement_sum = -sum.clone() - Expr::make_const(1);
+
+        let two_minus_one = make_guided_ternary_relation(
+            GuidedTernaryRelation::TwoMinusOne,
+            &x,
+            &y,
+            &sum,
+            make_mask(64),
+        );
+        let complement = make_guided_ternary_relation(
+            GuidedTernaryRelation::ComplementSum,
+            &x,
+            &y,
+            &complement_sum,
+            make_mask(64),
+        );
+
+        assert_eq!(simplify_mba(two_minus_one, 64), Ok(Expr::zero()));
+        assert_eq!(simplify_mba(complement, 64), Ok(Expr::zero()));
+    }
+
+    #[test]
+    fn guided_ternary_experiment_certifies_and_applies_relation() {
+        let x = Expr::Var(0.into());
+        let y = Expr::Var(1.into());
+        let a: VarId = 2.into();
+        let b: VarId = 3.into();
+        let c: VarId = 4.into();
+        let pre_restore = Expr::Var(a) - Expr::Var(b) - Expr::Var(c);
+        let make_atom = |atom, definition: Expr| HiddenAtomTrace {
+            atom,
+            original: definition.clone(),
+            simplified: definition,
+            free_atoms: vec![0.into(), 1.into()],
+            dependent_atoms: Vec::new(),
+            dependency_definition: None,
+            dependency_kind: HiddenAtomDependencyKind::Root,
+        };
+        let scope = HiddenScopeTrace {
+            scope: 0,
+            bit_width: 64,
+            input: pre_restore.clone(),
+            pre_restore_result: Some(pre_restore),
+            atoms: vec![
+                make_atom(a, x.clone() + y.clone()),
+                make_atom(b, x),
+                make_atom(c, y),
+            ],
+        };
+
+        let experiment = experiment_guided_ternary_relations(&scope)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(experiment.remaining_atoms, vec![a, b, c]);
+        assert_eq!(experiment.certified_relations.len(), 1);
+        assert_eq!(
+            experiment.certified_relations[0].kind,
+            GuidedTernaryRelation::OneMinusTwo
+        );
+        assert_eq!(experiment.simplified_after_substitution, Expr::zero());
     }
 }

@@ -5,9 +5,10 @@ use rumba_core::{
     parser::parse_expr,
     simplify::{
         CertifiedSemanticAlias, ComplementRelationProof, DirectComplementExperiment,
-        GuidedSemanticAliasExperiment, SemanticAlias, diagnose_hidden_atoms,
+        GuidedSemanticAliasExperiment, GuidedTernaryExperiment, SemanticAlias,
+        diagnose_hidden_atoms,
         experiment_direct_complement_relation, experiment_guided_semantic_aliases,
-        simplify_mba,
+        experiment_guided_ternary_relations, simplify_mba,
     },
 };
 
@@ -143,6 +144,42 @@ fn p7d_lite_resolves_qsynth_line_481_with_equal_alias() {
         alias: SemanticAlias::Equal,
     }));
     assert_eq!(experiment.simplified_after_substitution, Expr::zero());
+}
+
+fn qsynth_guided_ternary_experiment(line: usize) -> GuidedTernaryExperiment {
+    let (mba, ground_truth) = qsynth_case(line);
+    let simplified_mba = simplify_mba(mba, BIT_COUNT).unwrap();
+    let simplified_ground_truth = simplify_mba(ground_truth, BIT_COUNT).unwrap();
+    let (residual, trace) = diagnose_hidden_atoms(
+        simplified_ground_truth - simplified_mba,
+        BIT_COUNT,
+    )
+    .unwrap();
+    let scope = trace
+        .iter()
+        .find(|scope| scope.input == residual)
+        .expect("missing final residual scope");
+
+    experiment_guided_ternary_relations(scope)
+        .unwrap()
+        .expect("final scope does not have a pre-restoration result")
+}
+
+#[test]
+fn p7f_micro_finds_no_guided_ternary_relation_on_qsynth_line_260() {
+    let experiment = qsynth_guided_ternary_experiment(260);
+
+    assert_eq!(
+        experiment.occurrence_counts,
+        vec![(6.into(), 4), (8.into(), 2), (10.into(), 1)]
+    );
+    assert_eq!(experiment.attempts.len(), 3);
+    assert!(experiment.certified_relations.is_empty());
+    assert_eq!(
+        experiment.simplified_after_substitution,
+        experiment.residual_after_binary_aliases
+    );
+    assert_ne!(experiment.simplified_after_substitution, Expr::zero());
 }
 
 #[test]
