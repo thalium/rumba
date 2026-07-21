@@ -230,7 +230,7 @@ impl Reducer {
 
         match flat.len() {
             0 => Expr::Const(VarInt::MAX),
-            1 => flat.pop().unwrap(),
+            1 => flat.remove(0),
             _ => Expr::And(flat),
         }
     }
@@ -261,7 +261,7 @@ impl Reducer {
 
         match flat.len() {
             0 => Expr::zero(),
-            1 => flat.pop().unwrap(),
+            1 => flat.remove(0),
             _ => Expr::Or(flat),
         }
     }
@@ -288,7 +288,7 @@ impl Reducer {
 
         match flat.len() {
             0 => Expr::zero(),
-            1 => flat.pop().unwrap(),
+            1 => flat.remove(0),
             _ => Expr::Xor(flat),
         }
     }
@@ -318,7 +318,7 @@ impl Reducer {
 
         match flat.len() {
             0 => Expr::zero(),
-            1 => flat.pop().unwrap(),
+            1 => flat.remove(0),
             _ => self.group_terms(flat),
         }
     }
@@ -358,7 +358,7 @@ impl Reducer {
 
         match flat.len() {
             0 => Expr::Const(c),
-            1 => Expr::scale(c, flat.pop().unwrap()),
+            1 => Expr::scale(c, flat.remove(0)),
             _ => Expr::scale(c, Expr::Mul(flat)),
         }
     }

@@ -1,3 +1,9 @@
+// The JIT (opt-in `jit` feature) drives Cranelift codegen. A failure here means
+// the host toolchain/ISA could not be set up or the generated IR is malformed —
+// an environment/programming fault, not a solver input, so aborting is the right
+// behaviour rather than threading a codegen error through the solve path.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use cranelift::prelude::Configurable;
 use cranelift::{
     codegen::{

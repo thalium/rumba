@@ -1,3 +1,10 @@
+// The remaining `unwrap()`s here read the children of a `Pair` that pest only
+// produces after matching `expr.pest`; the grammar guarantees the shape, so a
+// missing child means the grammar and this code have drifted apart — a bug to
+// surface loudly, not an input error. Numeric conversions (which *can* fail on
+// grammar-valid input) are handled with explicit errors above.
+#![allow(clippy::unwrap_used)]
+
 use pest::Parser;
 use pest_derive::Parser;
 

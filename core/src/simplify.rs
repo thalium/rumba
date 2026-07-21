@@ -197,7 +197,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         match terms.len() {
             0 => Expr::zero(),
-            1 => terms.into_iter().next().unwrap(),
+            1 => terms.remove(0),
             _ => Expr::Add(terms),
         }
     }

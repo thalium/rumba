@@ -169,7 +169,7 @@ fn is_low_bit_of(candidate: &Expr, base: &Expr, mask: u64) -> bool {
 fn rebuild_and(mut children: Vec<Expr>) -> Expr {
     match children.len() {
         0 => Expr::make_const(u64::MAX),
-        1 => children.pop().unwrap(),
+        1 => children.remove(0),
         _ => Expr::And(children),
     }
 }
@@ -196,7 +196,7 @@ fn as_low_bit_mask(e: &Expr, mask: u64) -> Option<(u64, Expr)> {
         return None;
     }
     let m_x = match rest.len() {
-        1 => rest.pop().unwrap(),
+        1 => rest.remove(0),
         _ => Expr::Add(rest),
     };
     Some(split(&m_x, mask))
@@ -219,7 +219,7 @@ fn low_bit_mask_multiple(e: &Expr, mask: u64) -> Option<Expr> {
         return None;
     }
     Some(if rest.len() == 1 {
-        rest.pop().unwrap()
+        rest.remove(0)
     } else {
         Expr::Add(rest)
     })

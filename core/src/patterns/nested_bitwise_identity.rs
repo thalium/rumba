@@ -93,7 +93,7 @@ impl Pattern for NestedBitwiseIdentity {
                         .map(|(_, c)| c.clone())
                         .collect();
                     return Some(if kept.len() == 1 {
-                        kept.pop().unwrap()
+                        kept.remove(0)
                     } else {
                         Expr::And(kept)
                     });

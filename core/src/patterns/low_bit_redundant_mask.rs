@@ -74,7 +74,7 @@ impl Pattern for LowBitRedundantMask {
             let mut kept = children.clone();
             kept.remove(idx);
             return Some(if kept.len() == 1 {
-                kept.pop().unwrap()
+                kept.remove(0)
             } else {
                 Expr::And(kept)
             });

@@ -198,7 +198,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             let mut solver = MBASolver::new(self.l_cache, &difference, self.n);
             let is_zero = solver
                 .solve(difference)
-                .map_or(false, |e| e == Expr::zero());
+                .is_ok_and(|e| e == Expr::zero());
             depth.set(depth.get() - 1);
             is_zero
         })
