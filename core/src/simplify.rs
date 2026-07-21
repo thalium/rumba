@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     cmp::max,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Mutex,
         atomic::{AtomicU64, Ordering},
@@ -219,6 +219,12 @@ impl LinearCache for MbaCache {
     }
 }
 
+thread_local! {
+    /// Prevents a hidden-component equality query from recursively starting
+    /// another query while simplifying its own difference.
+    static HIDDEN_EQUALITY_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
 fn sub_coeff(tt: &mut [u64], coeff: u64, index: usize, sublist: &[usize]) {
     let are_vars_true = |i: usize| sublist[1..].iter().copied().all(|v| ((i >> v) & 1) == 1);
 
@@ -312,6 +318,70 @@ fn find_lambda_int(x: &[u64], y: &[u64], a: i64, b: i64, n: u8) -> Option<u64> {
     }
 }
 
+fn find_two_lambdas_int(
+    x: &[u64],
+    y: &[u64],
+    z: &[u64],
+    a: i64,
+    b: i64,
+    n: u8,
+) -> Option<(u64, u64)> {
+    let signed: Vec<_> = x
+        .iter()
+        .zip(y)
+        .zip(z)
+        .map(|((&x, &y), &z)| (get_signed(x, n), get_signed(y, n), get_signed(z, n)))
+        .collect();
+    let base = signed.iter().position(|&(_, y, z)| y != 0 || z != 0)?;
+    let targets = [a, b];
+
+    for second in 0..signed.len() {
+        let (_, y0, z0) = signed[base];
+        let (_, y1, z1) = signed[second];
+        let determinant = y0 as i128 * z1 as i128 - y1 as i128 * z0 as i128;
+        if determinant == 0 {
+            continue;
+        }
+
+        for target0 in targets {
+            for target1 in targets {
+                let rhs0 = signed[base].0.wrapping_sub(target0) as i128;
+                let rhs1 = signed[second].0.wrapping_sub(target1) as i128;
+                let lambda_y_num = rhs0 * z1 as i128 - rhs1 * z0 as i128;
+                let lambda_z_num = y0 as i128 * rhs1 - y1 as i128 * rhs0;
+                if lambda_y_num % determinant != 0 || lambda_z_num % determinant != 0 {
+                    continue;
+                }
+
+                let lambda_y = lambda_y_num / determinant;
+                let lambda_z = lambda_z_num / determinant;
+                let Ok(lambda_y) = i64::try_from(lambda_y) else {
+                    continue;
+                };
+                let Ok(lambda_z) = i64::try_from(lambda_z) else {
+                    continue;
+                };
+
+                let corrected = |(x, y, z): (i64, i64, i64)| {
+                    x.wrapping_sub(lambda_y.wrapping_mul(y))
+                        .wrapping_sub(lambda_z.wrapping_mul(z))
+                };
+                if corrected(signed[0]) == a
+                    && signed.iter().copied().all(|values| {
+                        let value = corrected(values);
+                        value == a || value == b
+                    })
+                {
+                    let mask = make_mask(n);
+                    return Some(((lambda_y as u64) & mask, (lambda_z as u64) & mask));
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Reduces the number of variables present in the MBA
 fn reduce_vars(e: Expr, var_map: &mut BiMap<VarId, VarId>, t: &mut usize) -> Expr {
     match e {
@@ -329,6 +399,35 @@ fn reduce_vars(e: Expr, var_map: &mut BiMap<VarId, VarId>, t: &mut usize) -> Exp
 
         _ => e.map(|e| reduce_vars(e, var_map, t)),
     }
+}
+
+fn passes_quick_zero_check(e: &Expr, mask: u64) -> bool {
+    let variable_count = e
+        .get_vars()
+        .into_iter()
+        .map(|variable| variable.0)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let mut variables = vec![0u64; variable_count];
+
+    for sample in 0..3u64 {
+        for (index, variable) in variables.iter_mut().enumerate() {
+            *variable = match sample {
+                0 => 0,
+                1 => mask,
+                _ => {
+                    0x9e37_79b9_7f4a_7c15u64
+                        .wrapping_add((index as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9))
+                        & mask
+                }
+            };
+        }
+        if e.eval(&variables).get(mask) != 0 {
+            return false;
+        }
+    }
+    true
 }
 
 /// Restores the varialbes in the mba
@@ -394,6 +493,48 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         }
     }
 
+    /// Expands hidden variables recursively. This is used when validating a
+    /// relation suggested by signatures: the proof must concern the original
+    /// expressions, not independent placeholder variables.
+    fn expand_hidden_components(&self, e: Expr) -> Expr {
+        match e {
+            Expr::Var(variable) => self
+                .non_linear_components
+                .get_by_left(&variable)
+                .cloned()
+                .map(|definition| self.expand_hidden_components(definition))
+                .unwrap_or(Expr::Var(variable)),
+            _ => e.map(|child| self.expand_hidden_components(child)),
+        }
+    }
+
+    /// Validates a signature-nominated equality using the expanded fixed-width
+    /// expressions. Signatures are only a search heuristic here; this proof is
+    /// the correctness boundary.
+    fn prove_hidden_relation(&mut self, left: Expr, right: Expr) -> bool {
+        let difference = match right {
+            // Use the canonical additive form for a complement relation. It is
+            // algebraically identical to `left - !right`, but exposes the
+            // relation directly to the linear engine.
+            Expr::Not(inner) => left + *inner + Expr::make_const(1),
+            right => left - right,
+        };
+        let difference = self.expand_hidden_components(difference).reduce(self.mask);
+        if !passes_quick_zero_check(&difference, self.mask) {
+            return false;
+        }
+
+        HIDDEN_EQUALITY_DEPTH.with(|depth| {
+            depth.set(depth.get() + 1);
+            let mut solver = MBASolver::new(self.l_cache, &difference, self.n);
+            let is_zero = solver
+                .solve(difference)
+                .map_or(false, |e| e == Expr::zero());
+            depth.set(depth.get() - 1);
+            is_zero
+        })
+    }
+
     /// Solves a non polynomial MBA
     fn solve(&mut self, e: Expr) -> Result<Expr, SolveError> {
         // TODO: Remove this only needs to be done once
@@ -404,6 +545,9 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         let e = crate::patterns::apply_patterns(e, self.mask);
 
         let p = self.make_polynomial(e)?;
+        let p = self.merge_equal_hidden_components(p);
+        self.degree = 1;
+        let p = self.make_polynomial(p)?;
         let p = self.solve_polynomial(p)?;
 
         // This was a non linear MBA
@@ -414,6 +558,208 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         } else {
             Ok(p)
         }
+    }
+
+    /// Interns semantically equal nonlinear components under the same hidden
+    /// variable. Syntactically equal components are already shared by `BiMap`;
+    /// this catches independently written expressions whose difference has a
+    /// zero signature.
+    fn merge_equal_hidden_components(&mut self, e: Expr) -> Expr {
+        if HIDDEN_EQUALITY_DEPTH.with(|depth| depth.get() != 0)
+            || self.non_linear_components.len() == 0
+        {
+            return e;
+        }
+
+        let mut components: Vec<_> = self
+            .non_linear_components
+            .iter()
+            .filter(|(_, expression)| !matches!(expression, Expr::Const(_)))
+            .map(|(variable, expression)| (*variable, expression.clone()))
+            .collect();
+        components.sort_unstable_by_key(|(variable, _)| variable.0);
+        if components.is_empty() {
+            return e;
+        }
+
+        let mut aliases = HashMap::<VarId, Expr>::new();
+
+        // Signatures of nonlinear expressions are not proofs, but they are a
+        // useful way to nominate small relations worth proving. Search a
+        // bounded grammar: an atom or its complement, and one binary bitwise
+        // operation with an optional complement.
+        let mut visible_variables = HashSet::new();
+        for (_, definition) in &components {
+            for variable in definition.get_vars() {
+                if self.non_linear_components.get_by_left(&variable).is_none() {
+                    visible_variables.insert(variable);
+                }
+            }
+        }
+        let mut visible_variables: Vec<_> = visible_variables.into_iter().collect();
+        visible_variables.sort_unstable_by_key(|variable| variable.0);
+
+        let mut signature_expressions = Vec::<(VarId, Expr)>::new();
+        for (variable, definition) in &components {
+            signature_expressions
+                .push((*variable, self.expand_hidden_components(definition.clone())));
+        }
+        let mut signature_atoms = Vec::<(Expr, Expr)>::new();
+        for (variable, definition) in &signature_expressions {
+            signature_atoms.push((Expr::Var(*variable), definition.clone()));
+        }
+        for variable in visible_variables {
+            signature_atoms.push((Expr::Var(variable), Expr::Var(variable)));
+        }
+
+        let mut variable_map = BiMap::<VarId, VarId>::new();
+        let mut variable_count = 0;
+        let reduced_definitions: Vec<_> = signature_expressions
+            .iter()
+            .map(|(_, definition)| {
+                reduce_vars(definition.clone(), &mut variable_map, &mut variable_count)
+            })
+            .collect();
+        let reduced_atoms: Vec<_> = signature_atoms
+            .iter()
+            .map(|(_, definition)| {
+                reduce_vars(definition.clone(), &mut variable_map, &mut variable_count)
+            })
+            .collect();
+
+        if variable_count <= 10 {
+            let mask = self.mask;
+            let definition_signatures: Vec<_> = reduced_definitions
+                .iter()
+                .map(|definition| definition.truth_table(variable_count, self.mask))
+                .collect();
+            let atom_signatures: Vec<_> = reduced_atoms
+                .iter()
+                .map(|atom| atom.truth_table(variable_count, self.mask))
+                .collect();
+
+            'targets: for (target_index, (target_variable, _)) in
+                signature_expressions.iter().enumerate()
+            {
+                if aliases.contains_key(target_variable) {
+                    continue;
+                }
+                let target_signature = &definition_signatures[target_index];
+                let usable_atoms: Vec<_> = signature_atoms
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (atom, _))| match atom {
+                        // Earlier hidden components cannot introduce an alias
+                        // cycle. Ordinary variables are always safe.
+                        Expr::Var(variable)
+                            if self.non_linear_components.get_by_left(variable).is_some() =>
+                        {
+                            variable.0 < target_variable.0
+                        }
+                        Expr::Var(_) => true,
+                        _ => false,
+                    })
+                    .collect();
+
+                for (atom_index, (atom, _)) in &usable_atoms {
+                    for complemented in [false, true] {
+                        let matches = target_signature
+                            .iter()
+                            .zip(&atom_signatures[*atom_index])
+                            .all(|(&target, &value)| {
+                                target
+                                    == if complemented {
+                                        (!value) & self.mask
+                                    } else {
+                                        value
+                                    }
+                            });
+                        if !matches {
+                            continue;
+                        }
+                        let candidate = if complemented {
+                            !atom.clone()
+                        } else {
+                            atom.clone()
+                        };
+                        debug!(
+                            "Signature nominated hidden relation v{} = {}",
+                            target_variable, candidate
+                        );
+                        if self
+                            .prove_hidden_relation(Expr::Var(*target_variable), candidate.clone())
+                        {
+                            aliases.insert(*target_variable, candidate);
+                            continue 'targets;
+                        }
+                    }
+                }
+
+                for left_position in 0..usable_atoms.len() {
+                    let (left_index, (left, _)) = usable_atoms[left_position];
+                    for (right_index, (right, _)) in &usable_atoms[left_position + 1..] {
+                        for operation in 0..3 {
+                            let signature_matches = |complemented: bool| {
+                                target_signature
+                                    .iter()
+                                    .zip(&atom_signatures[left_index])
+                                    .zip(&atom_signatures[*right_index])
+                                    .all(|((&target, &left_value), &right_value)| {
+                                        let value = match operation {
+                                            0 => left_value & right_value,
+                                            1 => left_value | right_value,
+                                            _ => left_value ^ right_value,
+                                        };
+                                        target == if complemented { (!value) & mask } else { value }
+                                    })
+                            };
+
+                            for complemented in [false, true] {
+                                if !signature_matches(complemented) {
+                                    continue;
+                                }
+                                let base = match operation {
+                                    0 => left.clone() & right.clone(),
+                                    1 => left.clone() | right.clone(),
+                                    _ => left.clone() ^ right.clone(),
+                                };
+                                let candidate = if complemented { !base } else { base };
+                                debug!(
+                                    "Signature nominated hidden relation v{} = {}",
+                                    target_variable, candidate
+                                );
+                                if self.prove_hidden_relation(
+                                    Expr::Var(*target_variable),
+                                    candidate.clone(),
+                                ) {
+                                    aliases.insert(*target_variable, candidate);
+                                    continue 'targets;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if aliases.is_empty() {
+            return e;
+        }
+
+        fn replace_aliases(e: Expr, aliases: &HashMap<VarId, Expr>) -> Expr {
+            match e {
+                Expr::Var(variable) => {
+                    if let Some(alias) = aliases.get(&variable) {
+                        replace_aliases(alias.clone(), aliases)
+                    } else {
+                        Expr::Var(variable)
+                    }
+                }
+                _ => e.map(|child| replace_aliases(child, aliases)),
+            }
+        }
+
+        replace_aliases(e, &aliases).reduce(self.mask)
     }
 
     /// Calcluates the signature of a linear MBA
@@ -687,67 +1033,82 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
     // Read paper
     fn variable_substitution(&self, e: Expr) -> Option<Expr> {
-        let mut vars = vec![];
         let mut sub_vars = vec![];
 
         for v in e.get_vars() {
-            if self.non_linear_components.get_by_left(&v).is_some() {
+            if self
+                .non_linear_components
+                .get_by_left(&v)
+                .is_some_and(|definition| self.is_linear(definition))
+            {
                 sub_vars.push(v);
-            } else {
-                vars.push(v);
             }
         }
+        sub_vars.sort_unstable_by_key(|variable| variable.0);
 
-        // TODO: allow 2 variable substitutions
-        if sub_vars.len() != 1 {
-            return None;
-        }
-
-        let sub_var = sub_vars[0];
-        let ee = self.non_linear_components.get_by_left(&sub_var).unwrap();
-
-        if !self.is_linear(ee) {
+        if sub_vars.is_empty() || sub_vars.len() > 2 {
             return None;
         }
 
         debug!("While checking if {} is linear", e);
         debug!("Proceding with advanced variable substitution");
-        debug!("Found substitution v{} = {}", sub_var, ee);
-
-        // This vector is null
-        let ee = Expr::Var(sub_var) - ee.clone();
-        debug!("Using zero expression {}", ee);
-
-        for v in ee.get_vars() {
-            if !vars.contains(&v) {
-                vars.push(v);
-            }
+        let mut zero_expressions = Vec::with_capacity(sub_vars.len());
+        for sub_var in sub_vars {
+            let definition = self.non_linear_components.get_by_left(&sub_var).unwrap();
+            debug!("Found substitution v{} = {}", sub_var, definition);
+            let zero = Expr::Var(sub_var) - definition.clone();
+            debug!("Using zero expression {}", zero);
+            zero_expressions.push(zero);
         }
 
         let mut var_map = BiMap::new();
         let mut t = 0;
 
         let reduced_e = reduce_vars(e.clone(), &mut var_map, &mut t);
-        let reduced_ee = reduce_vars(ee.clone(), &mut var_map, &mut t);
+        let reduced_zeros: Vec<_> = zero_expressions
+            .iter()
+            .cloned()
+            .map(|zero| reduce_vars(zero, &mut var_map, &mut t))
+            .collect();
+        if t > 10 {
+            return None;
+        }
 
         let se = self.calc_signature(&reduced_e, t);
         debug!("Using signature {:?}", se);
-        let see = self.calc_signature(&reduced_ee, t);
-        debug!("Using zero signature {:?}", see);
+        let zero_signatures: Vec<_> = reduced_zeros
+            .iter()
+            .map(|zero| self.calc_signature(zero, t))
+            .collect();
 
-        if let Some(lambda) = find_lambda_int(&se, &see, 0, 1, self.n) {
-            debug!("Found lambda that creates a [0, 1] signature: {:?}", lambda);
-            Some(e - lambda * ee)
-        } else if let Some(lambda) = find_lambda_int(&se, &see, -1, -2, self.n) {
-            debug!(
-                "Found lambda that creates a [-1, -2] signature: {:?}",
-                lambda
-            );
+        if zero_expressions.len() == 1 {
+            let see = &zero_signatures[0];
             debug!("Using zero signature {:?}", see);
-            Some(e - lambda * ee)
-        } else {
-            None
+            if let Some(lambda) = find_lambda_int(&se, see, 0, 1, self.n) {
+                debug!("Found lambda that creates a [0, 1] signature: {:?}", lambda);
+                return Some(e - lambda * zero_expressions.remove(0));
+            }
+            if let Some(lambda) = find_lambda_int(&se, see, -1, -2, self.n) {
+                debug!(
+                    "Found lambda that creates a [-1, -2] signature: {:?}",
+                    lambda
+                );
+                return Some(e - lambda * zero_expressions.remove(0));
+            }
+            return None;
         }
+
+        for (a, b) in [(0, 1), (-1, -2)] {
+            if let Some((left, right)) =
+                find_two_lambdas_int(&se, &zero_signatures[0], &zero_signatures[1], a, b, self.n)
+            {
+                debug!("Found two substitution lambdas: {}, {}", left, right);
+                return Some(
+                    e - left * zero_expressions[0].clone() - right * zero_expressions[1].clone(),
+                );
+            }
+        }
+        None
     }
 
     // A Linear MBA might "hide" a bitwise expression

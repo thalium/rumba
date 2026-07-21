@@ -33,4 +33,8 @@ impl<L: Eq + std::hash::Hash + Clone, R: Eq + std::hash::Hash + Clone> BiMap<L, 
     pub fn len(&self) -> usize {
         self.left.len()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&L, &R)> {
+        self.left.iter()
+    }
 }

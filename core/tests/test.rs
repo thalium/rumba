@@ -73,6 +73,7 @@ impl Experiment {
             return ExperimentResult {
                 elapsed,
                 status: Status::NG,
+                ng: None,
             };
         };
 
@@ -84,27 +85,40 @@ impl Experiment {
             );
         }
 
-        let Ok(simplified_gt) = simplify::simplify_mba(self.gt.clone(), BIT_COUNT) else {
+        let Ok(gt_produced) = simplify::simplify_mba(self.gt.clone(), BIT_COUNT) else {
             return ExperimentResult {
                 elapsed,
                 status: Status::NG,
+                ng: None,
             };
         };
 
         let mut status = Status::NG;
         let mut ng = None;
 
-        if simplified_mba == simplified_gt {
+        if simplified_mba == gt_produced {
             status = Status::Ok;
-        } else if simplify::simplify_mba(simplified_gt - simplified_mba.clone(), BIT_COUNT)
-            == Ok(Expr::zero())
-        {
-            status = Status::OkZ;
         } else {
-            ng = Some(format!(
-                "{}:{}\n  mba:      {}\n  gt:       {}\n  produced: {}\n",
-                self.filename, self.line_nb, self.mba, self.gt, simplified_mba
-            ));
+            let diff = (self.mba.clone() - self.gt.clone()).reduce(MASK);
+            let diff_produced = simplify::simplify_mba(diff, BIT_COUNT);
+            if diff_produced == Ok(Expr::zero()) {
+                status = Status::OkZ;
+            } else {
+                let diff_produced = match &diff_produced {
+                    Ok(e) => e.to_string(),
+                    Err(err) => format!("<error: {err}>"),
+                };
+                ng = Some(format!(
+                    "{}:{}\n  mba:           {}\n  gt:            {}\n  produced:      {}\n  gt-produced:   {}\n  diff-produced: {}\n",
+                    self.filename,
+                    self.line_nb,
+                    self.mba,
+                    self.gt,
+                    simplified_mba,
+                    gt_produced,
+                    diff_produced
+                ));
+            }
         }
 
         ExperimentResult {
@@ -238,6 +252,97 @@ macro_rules! test_dataset {
             run_on_dataset!($filename);
         }
     };
+}
+
+#[test]
+fn merges_semantically_equal_hidden_components() {
+    let x = parse_expr("v0 - v1 + 2 * (v1 & -v0)").unwrap();
+    let equivalent_x = parse_expr("v0 + v1 - 2 * (v1 & (v0 - 1))").unwrap();
+    let common = parse_expr("-v1 + (v0 & v1)").unwrap();
+    let difference = -(x & common.clone()) + (equivalent_x & common);
+
+    assert_eq!(
+        simplify::simplify_mba(difference, BIT_COUNT),
+        Ok(Expr::zero())
+    );
+}
+
+#[test]
+fn uses_two_hidden_definitions_to_recognize_bitwise_expression() {
+    let difference = parse_expr(
+        "-v3 - (v3 & 2*v4 & (v3+v4)) + (v3 & 2*v4) + (v3 & (v3+v4)) \
+         + (v3 & (-1 - 3*v4 - v3 + ((2*v4) & (v3+v4))))",
+    )
+    .unwrap();
+
+    assert_eq!(
+        simplify::simplify_mba(difference, BIT_COUNT),
+        Ok(Expr::zero())
+    );
+}
+
+#[test]
+fn merges_semantically_complementary_hidden_components() {
+    let difference = parse_expr(
+        "-v0 + (v0 & (-1 - 3*v0 - v2 - (v2 & (-1 - 2*v0)))) \
+         + (v0 & (2*v2 + 3*v0 - (v2 & 2*v0)))",
+    )
+    .unwrap();
+
+    assert_eq!(
+        simplify::simplify_mba(difference, BIT_COUNT),
+        Ok(Expr::zero())
+    );
+}
+
+#[test]
+fn ignores_nonlinear_hidden_variables_when_selecting_lambda_relations() {
+    let difference = parse_expr(
+        "-(2*v2 & (v0+v2)) - (2*v2 & (v2*v2)) \
+         + (2*v2 & (v0+v2) & (v2*v2)) \
+         + (2*v2 & ((v0+v2) + ((-1-v0-v2) & (v2*v2))))",
+    )
+    .unwrap();
+
+    assert_eq!(
+        simplify::simplify_mba(difference, BIT_COUNT),
+        Ok(Expr::zero())
+    );
+}
+
+#[test]
+fn recursively_proves_hidden_components_are_complements() {
+    let difference = parse_expr(
+        "-v3 \
+         + (v3 & (-1 - v2*v3 - v3*v3 - v3*(v2 & (-1-v2-v3)))) \
+         + (v3 & (2*v2*v3 - v3*(v2 & (v2+v3)) + v3*v3))",
+    )
+    .unwrap();
+
+    assert_eq!(
+        simplify::simplify_mba(difference, BIT_COUNT),
+        Ok(Expr::zero())
+    );
+}
+
+#[test]
+fn discovers_proven_binary_relation_between_hidden_components() {
+    // B = v4-v0-v3-(v4&-v0), C = ~(B|v0), and v5 is an arbitrary value.
+    // The signatures nominate that relation, but its expanded definitions must
+    // be proved equal before it is used.
+    let difference = parse_expr(
+        "-v5 \
+         - (v0 & v5 & (v4-v0-v3-(v4 & -v0))) \
+         + (v0 & v5) \
+         + (v5 & (v3-1-(v4 & (v0-1))+(v0 & (-v0-v3+(v4 & (v0-1)))))) \
+         + (v5 & (v4-v0-v3-(v4 & -v0)))",
+    )
+    .unwrap();
+
+    assert_eq!(
+        simplify::simplify_mba(difference, BIT_COUNT),
+        Ok(Expr::zero())
+    );
 }
 
 #[cfg(test)]
