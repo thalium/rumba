@@ -1,5 +1,4 @@
 use crate::expr::Expr;
-use crate::varint::VarInt;
 
 use super::{Pattern, Tag};
 
@@ -22,7 +21,7 @@ pub(super) struct NestedBitwiseIdentity;
 impl NestedBitwiseIdentity {
     /// `-e`, canonicalized, so it compares equal to a reduced sibling.
     fn negate(e: &Expr, mask: u64) -> Expr {
-        Expr::scale(VarInt::from(mask), e.clone()).reduce_masked(mask)
+        Expr::scale(mask, e.clone()).reduce_masked(mask)
     }
 
     /// For a redundant conjunct `-(c0 & c1)`, returns the sibling expressions
@@ -69,7 +68,7 @@ impl Pattern for NestedBitwiseIdentity {
             let Expr::Scale(c, inner) = child else {
                 continue;
             };
-            if c.get(mask) != mask {
+            if (c & mask) != mask {
                 continue;
             }
             let Expr::And(conj) = inner.as_ref() else {

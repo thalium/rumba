@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     expr::Expr,
-    varint::{VarInt, make_mask},
+    varint::make_mask,
 };
 
 /// Distributes an expression
@@ -120,24 +120,24 @@ impl Reducer {
     pub fn group_terms(&self, exprs: Vec<Expr>) -> Expr {
         let initial_len = exprs.len();
 
-        let mut map = HashMap::<Expr, VarInt>::with_capacity(initial_len);
+        let mut map = HashMap::<Expr, u64>::with_capacity(initial_len);
 
         for e in exprs.into_iter() {
             if let Expr::Scale(c, e) = e {
-                let count = map.entry(*e).or_insert(VarInt::ZERO);
-                *count = *count + c;
+                let count = map.entry(*e).or_insert(0);
+                *count = count.wrapping_add(c);
             } else {
-                let count = map.entry(e).or_insert(VarInt::ZERO);
-                *count = *count + VarInt::ONE;
+                let count = map.entry(e).or_insert(0);
+                *count = count.wrapping_add(1);
             }
         }
 
         let mut out = Vec::with_capacity(map.len());
 
         for (e, mut count) in map {
-            count = count.mask(self.mask);
+            count &= self.mask;
 
-            if *count == 0 {
+            if count == 0 {
                 continue;
             }
 
@@ -172,20 +172,20 @@ impl Reducer {
     }
 
     /// Reduces a scale node
-    fn reduce_scale(&self, scale: VarInt, expr: Expr) -> Expr {
-        let scale = scale.mask(self.mask);
+    fn reduce_scale(&self, scale: u64, expr: Expr) -> Expr {
+        let scale = scale & self.mask;
 
-        match *scale {
+        match scale {
             0 => Expr::zero(),
 
             1 => self.reduce_masked(expr),
 
             _ => match self.reduce_masked(expr) {
-                Expr::Const(c2) => Expr::Const((scale * c2).mask(self.mask)),
+                Expr::Const(c2) => Expr::Const(scale.wrapping_mul(c2) & self.mask),
 
                 Expr::Scale(c2, e) => {
-                    let c = (scale * c2).mask(self.mask);
-                    match *c {
+                    let c = scale.wrapping_mul(c2) & self.mask;
+                    match c {
                         0 => Expr::zero(),
                         1 => *e,
                         c => c * *e,
@@ -204,24 +204,24 @@ impl Reducer {
 
     /// Reduces a and node
     fn reduce_and(&self, exprs: Vec<Expr>) -> Expr {
-        let mut c: VarInt = self.mask.into();
+        let mut c: u64 = self.mask;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::And(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c & v;
+                c &= v;
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c == 0 {
+        if c == 0 {
             return Expr::zero();
         }
 
-        if *c != self.mask {
+        if c != self.mask {
             flat.push(Expr::Const(c));
         }
 
@@ -232,27 +232,27 @@ impl Reducer {
         flat = dedupe(flat);
 
         match flat.len() {
-            0 => Expr::Const(VarInt::MAX),
+            0 => Expr::Const(u64::MAX),
             1 => flat.remove(0),
             _ => Expr::And(flat),
         }
     }
 
     fn reduce_or(&self, exprs: Vec<Expr>) -> Expr {
-        let mut c = VarInt::ZERO;
+        let mut c: u64 = 0;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Or(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c | v;
+                c |= v;
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c != 0 {
+        if c != 0 {
             flat.push(Expr::Const(c));
         }
 
@@ -270,20 +270,20 @@ impl Reducer {
     }
 
     fn reduce_xor(&self, exprs: Vec<Expr>) -> Expr {
-        let mut c = VarInt::ZERO;
+        let mut c: u64 = 0;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Xor(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c ^ v;
+                c ^= v;
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c != 0 {
+        if c != 0 {
             flat.push(Expr::Const(c));
         }
 
@@ -302,20 +302,20 @@ impl Reducer {
             return self.reduce_xor(exprs);
         }
 
-        let mut c = VarInt::ZERO;
+        let mut c: u64 = 0;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Add(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c + v;
+                c = c.wrapping_add(v);
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c != 0 {
+        if c != 0 {
             flat.push(Expr::Const(c));
         }
 
@@ -332,24 +332,24 @@ impl Reducer {
             return self.reduce_and(exprs);
         }
 
-        let mut c = VarInt::ONE;
+        let mut c: u64 = 1;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Mul(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c * v;
+                c = c.wrapping_mul(v);
                 FlattenResult::None
             }
             Expr::Scale(s, v) => {
-                c = c * s;
+                c = c.wrapping_mul(s);
                 FlattenResult::Expr(*v)
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c == 0 {
+        if c == 0 {
             return Expr::zero();
         }
 
@@ -370,7 +370,7 @@ impl Reducer {
         match expr {
             Expr::Var(_) => expr,
 
-            Expr::Const(c) => Expr::Const(c.mask(self.mask)),
+            Expr::Const(c) => Expr::Const(c & self.mask),
 
             Expr::Not(expr) => self.reduce_not(*expr),
 

@@ -49,7 +49,7 @@ fn translate_expr(e: &Expr, builder: &mut FunctionBuilder, block: &Block) -> Val
                 .load(I64, flags, arg, Offset32::new(8 * idx.0 as i32))
         }
 
-        Expr::Const(var_int) => builder.ins().iconst(I64, **var_int as i64),
+        Expr::Const(var_int) => builder.ins().iconst(I64, *var_int as i64),
 
         Expr::Not(expr) => {
             let e = translate_expr(expr.as_ref(), builder, block);
@@ -58,7 +58,7 @@ fn translate_expr(e: &Expr, builder: &mut FunctionBuilder, block: &Block) -> Val
 
         Expr::Scale(var_int, expr) => {
             let e = translate_expr(expr.as_ref(), builder, block);
-            builder.ins().imul_imm(e, **var_int as i64)
+            builder.ins().imul_imm(e, *var_int as i64)
         }
 
         Expr::And(exprs) => {

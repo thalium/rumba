@@ -8,9 +8,7 @@ use std::{
 
 use rand::random_range;
 
-pub use crate::varint::VarInt;
-
-use crate::varint::make_mask;
+use crate::varint::{VarInt, make_mask};
 
 #[cfg(feature = "jit")]
 use crate::jit;
@@ -34,11 +32,11 @@ impl From<usize> for VarId {
 pub enum Expr {
     Var(VarId),
 
-    Const(VarInt),
+    Const(u64),
 
     // Unary
     Not(Box<Expr>),
-    Scale(VarInt, Box<Expr>),
+    Scale(u64, Box<Expr>),
 
     // Bitwise
     And(Vec<Expr>),
@@ -110,27 +108,7 @@ impl Mul<Expr> for u64 {
     type Output = Expr;
 
     fn mul(self, rhs: Expr) -> Self::Output {
-        if self == 0 {
-            Expr::Const(VarInt::ZERO)
-        } else if self == 1 {
-            rhs
-        } else {
-            Expr::Scale(self.into(), Box::new(rhs))
-        }
-    }
-}
-
-impl Mul<Expr> for VarInt {
-    type Output = Expr;
-
-    fn mul(self, rhs: Expr) -> Self::Output {
-        if self == VarInt::ZERO {
-            Expr::Const(self)
-        } else if self == VarInt::ONE {
-            rhs
-        } else {
-            Expr::Scale(self, Box::new(rhs))
-        }
+        Expr::scale(self, rhs)
     }
 }
 
@@ -138,7 +116,7 @@ impl Neg for Expr {
     type Output = Expr;
 
     fn neg(self) -> Self::Output {
-        Expr::Scale(VarInt::MAX, Box::new(self))
+        Expr::Scale(u64::MAX, Box::new(self))
     }
 }
 
@@ -148,26 +126,26 @@ impl fmt::Display for Expr {
     }
 }
 
-impl From<VarInt> for Expr {
-    fn from(value: VarInt) -> Self {
+impl From<u64> for Expr {
+    fn from(value: u64) -> Self {
         Expr::Const(value)
     }
 }
 
 impl Expr {
     pub fn make_const(c: u64) -> Self {
-        Expr::Const(c.into())
+        Expr::Const(c)
     }
 
     /// An null expression
     pub const fn zero() -> Self {
-        Expr::Const(VarInt::ZERO)
+        Expr::Const(0)
     }
 
-    pub(crate) fn scale(c: VarInt, e: Expr) -> Expr {
+    pub(crate) fn scale(c: u64, e: Expr) -> Expr {
         match c {
-            VarInt::ZERO => Expr::zero(),
-            VarInt::ONE => e,
+            0 => Expr::zero(),
+            1 => e,
             _ => Expr::Scale(c, Box::new(e)),
         }
     }
@@ -182,11 +160,11 @@ impl Expr {
     /// multiples of the same core.
     pub(crate) fn get_factor(&self, mask: u64) -> u64 {
         let term_factor = |t: &Expr| match t {
-            Expr::Scale(c, _) => c.get(mask),
+            Expr::Scale(c, _) => c & mask,
             _ => 1,
         };
         match self {
-            Expr::Scale(c, _) => c.get(mask),
+            Expr::Scale(c, _) => c & mask,
             Expr::Add(terms) => {
                 let f = term_factor(&terms[0]);
                 if terms.iter().all(|t| term_factor(t) == f) {
@@ -221,7 +199,7 @@ impl Expr {
         match self {
             Expr::Var(i) => vars[i.0].into(),
 
-            Expr::Const(c) => *c,
+            Expr::Const(c) => (*c).into(),
 
             Expr::And(exprs) => exprs
                 .iter()
@@ -248,7 +226,7 @@ impl Expr {
                 .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ONE, |x, y| x * y),
 
-            Expr::Scale(v, e) => *v * e.eval_bits(vars),
+            Expr::Scale(v, e) => VarInt::from(*v) * e.eval_bits(vars),
 
             Expr::Not(e) => !e.eval_bits(vars),
         }
@@ -474,11 +452,11 @@ impl Expr {
                 }
             }
 
-            Expr::Const(c) => c.repr(n, mask, hex, latex),
+            Expr::Const(c) => VarInt::from(*c).repr(n, mask, hex, latex),
 
             Expr::Scale(c, expr) => format!(
                 "{} {} {}",
-                c.repr(n, mask, hex, latex),
+                VarInt::from(*c).repr(n, mask, hex, latex),
                 self.symbol(latex),
                 recurs(expr)
             ),

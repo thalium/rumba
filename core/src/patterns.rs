@@ -14,7 +14,6 @@
 use std::collections::BTreeMap;
 
 use crate::expr::Expr;
-use crate::varint::VarInt;
 
 /// A lightweight, `const`-constructible discriminant used to index patterns by
 /// the expression variant they care about.
@@ -84,7 +83,7 @@ fn split(e: &Expr, mask: u64) -> (u64, Expr) {
 
 /// `coefficient * e`, reduced into the same canonical form seen by patterns.
 fn scaled(e: &Expr, coefficient: u64, mask: u64) -> Expr {
-    Expr::scale(VarInt::from(coefficient), e.clone()).reduce_masked(mask)
+    Expr::scale(coefficient, e.clone()).reduce_masked(mask)
 }
 
 /// The canonical arithmetic negation of `e`.
@@ -102,8 +101,8 @@ fn additive_coefficients(e: &Expr, mask: u64) -> BTreeMap<Expr, u64> {
     };
     for term in terms {
         let (coefficient, core) = match term {
-            Expr::Scale(c, core) => (c.get(mask), core.as_ref().clone()),
-            Expr::Const(c) => (c.get(mask), Expr::make_const(1)),
+            Expr::Scale(c, core) => (c & mask, core.as_ref().clone()),
+            Expr::Const(c) => (c & mask, Expr::make_const(1)),
             _ => (1, term.clone()),
         };
         let entry = result.entry(core).or_insert(0u64);
@@ -188,7 +187,7 @@ fn as_low_bit_mask(e: &Expr, mask: u64) -> Option<(u64, Expr)> {
     let mut rest: Vec<Expr> = Vec::with_capacity(terms.len());
     for t in terms {
         match t {
-            Expr::Const(c) if c.get(mask) == mask => neg_one = true,
+            Expr::Const(c) if (c & mask) == mask => neg_one = true,
             _ => rest.push(t.clone()),
         }
     }
@@ -211,7 +210,7 @@ fn low_bit_mask_multiple(e: &Expr, mask: u64) -> Option<Expr> {
     let mut rest = Vec::new();
     for term in terms {
         match term {
-            Expr::Const(c) if c.get(mask) == mask => neg_one = true,
+            Expr::Const(c) if (c & mask) == mask => neg_one = true,
             _ => rest.push(term.clone()),
         }
     }

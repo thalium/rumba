@@ -4,7 +4,7 @@ use crate::{
     utils::bimap::BiMap,
     utils::cache::{LinearCache, LocalCache, MbaCache},
     expr::{Expr, VarId},
-    varint::{VarInt, make_mask},
+    varint::make_mask,
 };
 
 use log::debug;
@@ -159,7 +159,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         let constant = signature[0];
 
         if constant != 0 {
-            terms.push(Expr::Const(constant.into()));
+            terms.push(Expr::Const(constant));
 
             for v in &mut signature {
                 *v = v.wrapping_sub(constant);
@@ -280,12 +280,8 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
                     e
                 } else {
                     // The sign correction -> see paper
-                    let s = if self.degree & 1 == 0 {
-                        VarInt::MAX
-                    } else {
-                        VarInt::ONE
-                    };
-                    Expr::Const(s * c)
+                    let s: u64 = if self.degree & 1 == 0 { u64::MAX } else { 1 };
+                    Expr::Const(s.wrapping_mul(c))
                 }
             }
 
@@ -518,7 +514,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         match e {
             // -1 and 0 are bitwise
             Expr::Const(c) => {
-                if c.get(mask) == 0 || c.get(mask) == self.mask {
+                if (c & mask) == 0 || (c & mask) == self.mask {
                     Ok(e)
                 } else {
                     self.hide_in_var(e, mask)
@@ -540,7 +536,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             Expr::And(terms) => {
                 for e in &terms {
                     if let Expr::Const(c) = e {
-                        let c = c.get(mask);
+                        let c = c & mask;
                         if c & (c.wrapping_add(1)) == 0 {
                             debug!("Found dynamic mask {} = 2^{} -1", c, c.count_ones());
                             mask = c;
@@ -626,7 +622,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         fn is_bitwise(e: &Expr, mask: u64) -> bool {
             match e {
                 // -1 and 0 are bitwise
-                Expr::Const(c) => (c.get(mask) == 0) || (c.get(mask) == mask),
+                Expr::Const(c) => ((c & mask) == 0) || ((c & mask) == mask),
 
                 // Variables are bitwise
                 Expr::Var(_) => true,
@@ -751,11 +747,9 @@ mod tests {
             Ok(match e {
                 Expr::Var(VarId(0)) => !Expr::Var(1.into()),
                 Expr::Not(inner) if *inner == Expr::Var(1.into()) => {
-                    VarInt::from(2u64) * Expr::Var(2.into())
+                    2u64 * Expr::Var(2.into())
                 }
-                Expr::Scale(c, inner)
-                    if c == VarInt::from(2u64) && *inner == Expr::Var(2.into()) =>
-                {
+                Expr::Scale(c, inner) if c == 2 && *inner == Expr::Var(2.into()) => {
                     Expr::Var(3.into())
                 }
                 stable => stable,

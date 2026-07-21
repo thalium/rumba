@@ -296,7 +296,7 @@ pub unsafe extern "C" fn rumba_expr_get_const(ptr: *const c_void) -> u64 {
     let expr = unsafe { to_ref::<Expr>(ptr) };
 
     match expr {
-        Expr::Scale(c, _) | Expr::Const(c) => **c,
+        Expr::Scale(c, _) | Expr::Const(c) => *c,
         _ => panic!("Expression is not a CONST"),
     }
 }
@@ -316,7 +316,7 @@ pub unsafe extern "C" fn rumba_expr_get_var(ptr: *const c_void) -> usize {
 /// Create a new CONSTANT expression
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_make_const(c: u64) -> *mut c_void {
-    make_expr_ptr(Expr::Const(c.into()))
+    make_expr_ptr(Expr::Const(c))
 }
 
 /// Create a new VARIABLE expression

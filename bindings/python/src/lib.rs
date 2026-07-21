@@ -20,7 +20,7 @@ impl Expr {
         if let Some(py_obj) = obj {
             if let Ok(value) = py_obj.extract::<u64>() {
                 Ok(Self {
-                    inner: expr::Expr::Const(value.into()),
+                    inner: expr::Expr::Const(value),
                 })
             } else if let Ok(_value) = py_obj.extract::<String>() {
                 #[cfg(feature = "parse")]
@@ -59,7 +59,7 @@ impl Expr {
     #[staticmethod]
     fn int(c: u64) -> PyResult<Self> {
         Ok(Self {
-            inner: expr::Expr::Const(c.into()),
+            inner: expr::Expr::Const(c),
         })
     }
 
@@ -75,7 +75,7 @@ impl Expr {
 
     fn to_int(&self) -> PyResult<u64> {
         match self.inner {
-            expr::Expr::Const(c) => Ok(c.get(u64::MAX)),
+            expr::Expr::Const(c) => Ok(c),
             _ => Err(pyo3::exceptions::PyTypeError::new_err("Not an int")),
         }
     }
@@ -129,7 +129,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() + expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() + expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -149,7 +149,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() - expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() - expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -165,7 +165,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: expr::Expr::Const(rhs_int.into()) - self.inner.clone(),
+                inner: expr::Expr::Const(rhs_int) - self.inner.clone(),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -181,7 +181,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() * expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() * expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -201,7 +201,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() ^ expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() ^ expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -221,7 +221,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() & expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() & expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -241,7 +241,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() | expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() | expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -258,7 +258,7 @@ impl Expr {
         if let Ok(rhs) = other.extract::<Self>() {
             Ok(self.inner.clone() == rhs.inner.clone())
         } else if let Ok(rhs_int) = other.extract::<u64>() {
-            Ok(self.inner.clone() == expr::Expr::Const(rhs_int.into()))
+            Ok(self.inner.clone() == expr::Expr::Const(rhs_int))
         } else {
             Err(exceptions::PyTypeError::new_err(
                 "Operand must be ANFExpr or int",

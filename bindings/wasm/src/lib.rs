@@ -32,11 +32,11 @@ impl ExprWasm {
     pub fn new_const(n: f64) -> ExprWasm {
         if n < 0.0 {
             ExprWasm {
-                inner: -Expr::Const(((-n) as u64).into()),
+                inner: -Expr::Const((-n) as u64),
             }
         } else {
             ExprWasm {
-                inner: Expr::Const((n as u64).into()),
+                inner: Expr::Const(n as u64),
             }
         }
     }

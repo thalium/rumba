@@ -37,13 +37,13 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr, String> {
                 .as_str()
                 .parse::<u64>()
                 .map_err(|_| format!("integer literal out of range: {}", pair.as_str()))?;
-            Expr::Const(val.into())
+            Expr::Const(val)
         }
 
         Rule::hex_number => {
             let val = u64::from_str_radix(&pair.as_str()[2..], 16)
                 .map_err(|_| format!("hex literal out of range: {}", pair.as_str()))?;
-            Expr::Const(val.into())
+            Expr::Const(val)
         }
 
         Rule::var => {
@@ -246,7 +246,7 @@ u8 v5 = unknown(v4)
                 ty: 8,
                 id: 4.into(),
                 kind: InsnKind::Assign(
-                    Expr::Var(2.into()) + Expr::Const(2.into()) * Expr::Var(3.into())
+                    Expr::Var(2.into()) + Expr::Const(2) * Expr::Var(3.into())
                 )
             }
         );
