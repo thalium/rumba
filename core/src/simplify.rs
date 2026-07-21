@@ -948,8 +948,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             Expr::Var(v) => {
                 // The sign correction -> see paper
                 let s = if self.degree & 1 == 0 { u64::MAX } else { 1 };
-                // ERROR: this should be a t
-                Ok(s * Expr::Var((v.0 % self.degree).into()))
+                Ok(s * Expr::Var((v.0 % self.t).into()))
             }
 
             Expr::Const(_) => {
@@ -1315,4 +1314,21 @@ pub fn simplify_mba_with_cache<C: LinearCache>(
     }
 
     Ok(e)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inverse_pct_round_trip_preserves_variable_index() {
+        let mut cache = HashMap::new();
+        let mut solver = MBASolver::new(&mut cache, &Expr::Var(2.into()), 8);
+        solver.degree = 2;
+        let original = Expr::Var(2.into());
+        let encoded = solver.poly_to_linear(original.clone(), 2);
+
+        assert_eq!(encoded, Expr::Var(5.into()));
+        assert_eq!(solver.linear_to_poly(encoded), u64::MAX * original);
+    }
 }
