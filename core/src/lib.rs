@@ -1,5 +1,6 @@
 mod bimap;
 pub mod expr;
+pub mod p8;
 pub mod reduce;
 pub mod simplify;
 pub mod varint;
