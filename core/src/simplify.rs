@@ -225,6 +225,8 @@ thread_local! {
     static HIDDEN_EQUALITY_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
+const MAX_SIMPLIFICATION_PASSES: usize = 8;
+
 fn sub_coeff(tt: &mut [u64], coeff: u64, index: usize, sublist: &[usize]) {
     let are_vars_true = |i: usize| sublist[1..].iter().copied().all(|v| ((i >> v) & 1) == 1);
 
@@ -1281,6 +1283,34 @@ fn simplify_mba_inner<C: LinearCache>(l_cache: &C, e: Expr, n: u8) -> Result<Exp
     solver.solve(e)
 }
 
+fn simplify_to_fixed_point<F>(mut e: Expr, mut simplify: F) -> Result<Expr, SolveError>
+where
+    F: FnMut(Expr) -> Result<Expr, SolveError>,
+{
+    let mut seen = HashSet::from([e.clone()]);
+    let mut best = e.clone();
+
+    for _ in 0..MAX_SIMPLIFICATION_PASSES {
+        let next = simplify(e.clone())?;
+        debug!("e: {}", next);
+
+        if next.size() < best.size() {
+            best = next.clone();
+        }
+        if next == e {
+            return Ok(next);
+        }
+        if !seen.insert(next.clone()) {
+            debug!("simplification cycle detected; retaining best expression");
+            return Ok(best);
+        }
+        e = next;
+    }
+
+    debug!("simplification pass limit reached; retaining best expression");
+    Ok(best)
+}
+
 // I should probably add a flag for recursive simplification
 pub fn simplify_mba(e: Expr, n: u8) -> Result<Expr, SolveError> {
     simplify_mba_with_cache(&LocalCache::new(), e, n)
@@ -1298,22 +1328,8 @@ pub fn simplify_mba_with_cache<C: LinearCache>(
     n: u8,
 ) -> Result<Expr, SolveError> {
     let mask = make_mask(n);
-    let mut e = e.reduce(mask);
-
-    let mut size = usize::MAX;
-    loop {
-        e = simplify_mba_inner(cache, e, n)?;
-        debug!("e: {}", e);
-        let sz = e.size();
-
-        if size == sz {
-            break;
-        }
-
-        size = sz;
-    }
-
-    Ok(e)
+    let e = e.reduce(mask);
+    simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n))
 }
 
 #[cfg(test)]
@@ -1322,13 +1338,62 @@ mod tests {
 
     #[test]
     fn inverse_pct_round_trip_preserves_variable_index() {
-        let mut cache = HashMap::new();
-        let mut solver = MBASolver::new(&mut cache, &Expr::Var(2.into()), 8);
+        let cache = LocalCache::new();
+        let mut solver = MBASolver::new(&cache, &Expr::Var(2.into()), 8);
         solver.degree = 2;
         let original = Expr::Var(2.into());
         let encoded = solver.poly_to_linear(original.clone(), 2);
 
         assert_eq!(encoded, Expr::Var(5.into()));
         assert_eq!(solver.linear_to_poly(encoded), u64::MAX * original);
+    }
+
+    #[test]
+    fn fixed_point_continues_when_structure_changes_at_equal_size() {
+        let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
+            Ok(match e {
+                Expr::Var(VarId(0)) => !Expr::Var(1.into()),
+                Expr::Not(inner) if *inner == Expr::Var(1.into()) => {
+                    VarInt::from(2u64) * Expr::Var(2.into())
+                }
+                Expr::Scale(c, inner)
+                    if c == VarInt::from(2u64) && *inner == Expr::Var(2.into()) =>
+                {
+                    Expr::Var(3.into())
+                }
+                stable => stable,
+            })
+        });
+
+        assert_eq!(result, Ok(Expr::Var(3.into())));
+    }
+
+    #[test]
+    fn fixed_point_cycle_returns_smallest_expression() {
+        let start = !Expr::Var(0.into());
+        let result = simplify_to_fixed_point(start.clone(), |e| {
+            if e == start {
+                Ok(Expr::Var(1.into()))
+            } else {
+                Ok(start.clone())
+            }
+        });
+
+        assert_eq!(result, Ok(Expr::Var(1.into())));
+    }
+
+    #[test]
+    fn fixed_point_has_a_pass_limit() {
+        let calls = Cell::new(0usize);
+        let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
+            calls.set(calls.get() + 1);
+            Ok(match e {
+                Expr::Var(variable) => Expr::Var((variable.0 + 1).into()),
+                other => other,
+            })
+        });
+
+        assert_eq!(calls.get(), MAX_SIMPLIFICATION_PASSES);
+        assert_eq!(result, Ok(Expr::Var(0.into())));
     }
 }
