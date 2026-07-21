@@ -15,6 +15,10 @@ The best measured diagnostic order is:
 normal simplification -> P7e -> P8a -> P8b -> P8c
 ```
 
+This order is now packaged by the opt-in `p8::experiment_pipeline` API and is
+covered by stage-specific integration tests. It is still not invoked by the
+normal `simplify_mba` entry point.
+
 It reduces the complete 41,000-expression corpus from 101 to **41 NG**:
 
 | Dataset | Cases | Baseline NG | Resolved experimentally | Remaining NG | Success rate |
@@ -75,8 +79,57 @@ ground truths:
 Both variants reported zero sampled semantic regressions, zero determinism
 violations, and zero cases where an `Unknown` result changed the AST.
 
-The P7e/P8 pipeline remains diagnostic-only: these projected corpus results are
-not yet produced by the normal `simplify_mba` path.
+### Exact validation
+
+The complete 41,000-case comparison and the exact 64-bit certificate run report:
+
+```text
+baseline_NG=101
+experimental_NG=41
+qsynth_ea.csv experimental_NG=0
+
+no_oracle_changed=24
+exact_UNSAT=24
+exact_SAT=0
+exact_UNKNOWN=0
+p8c_resolved_residuals=25
+```
+
+`changed=24` and `resolved=25` measure different populations: the first is the
+number of ordinary simplified MBA outputs changed by the no-oracle P8c pass;
+the second is the number of known residuals closed by P8c after P7e/P8a/P8b.
+All 24 changed no-oracle outputs were proven exactly equivalent at width 64.
+
+### Remaining 41 NG: causal blockers
+
+The deterministic first-blocker classification is:
+
+| First blocker | Cases |
+|---|---:|
+| `NoLowBitCandidate` | 13 |
+| `AnchorCandidateUnproved` | 11 |
+| `AnchorProvedNoUse` | 7 |
+| `AboveLowUnknown` | 10 |
+| `MultipleAnchors` | 0 |
+| `RewriteAppliedNonZero` | 0 |
+| `TerminalNormalizationFailure` | 0 |
+
+The non-exclusive raw counters additionally include 13 `AboveLowUnknown` and
+11 multiple-anchor residuals. Counterfactual facts are applied only to copies:
+
+```text
+counterfactual_anchor_zero=0
+counterfactual_above_zero=3
+counterfactual_reduced_over_50_percent=5
+```
+
+The three residuals made exactly zero by an assumed `AboveLow` fact are
+`loki_tiny.csv:3312`, `17633`, and `17980`. Therefore a bounded P8d membership
+proof has an immediate causal ceiling of three known resolutions. Improving
+anchor recognition alone has no directly resolving counterfactual in this set.
+
+The P7e/P8 pipeline remains opt-in: these projected corpus results are not yet
+produced by the normal `simplify_mba` path.
 
 ## Normal simplifier baseline
 
