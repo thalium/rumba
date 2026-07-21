@@ -8,7 +8,9 @@ use std::{
 
 use rand::random_range;
 
-use crate::varint::VarInt;
+pub use crate::varint::VarInt;
+
+use crate::varint::make_mask;
 
 #[cfg(feature = "jit")]
 use crate::jit;
@@ -140,11 +142,9 @@ impl Neg for Expr {
     }
 }
 
-pub type TruthTable = [u64; 256 * 256];
-
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.repr(64, u64::MAX, true, false))
+        f.write_str(&self.repr_masked(64, u64::MAX, true, false))
     }
 }
 
@@ -164,7 +164,7 @@ impl Expr {
         Expr::Const(VarInt::ZERO)
     }
 
-    pub fn scale(c: VarInt, e: Expr) -> Expr {
+    pub(crate) fn scale(c: VarInt, e: Expr) -> Expr {
         match c {
             VarInt::ZERO => Expr::zero(),
             VarInt::ONE => e,
@@ -180,7 +180,7 @@ impl Expr {
     /// `2·x + 2·y`; this recovers the `2` that is no longer syntactically
     /// present, letting callers see `x + y`, `2·x + 2·y` and `-x - y` as scalar
     /// multiples of the same core.
-    pub fn get_factor(&self, mask: u64) -> u64 {
+    pub(crate) fn get_factor(&self, mask: u64) -> u64 {
         let term_factor = |t: &Expr| match t {
             Expr::Scale(c, _) => c.get(mask),
             _ => 1,
@@ -217,7 +217,7 @@ impl Expr {
     }
 
     /// Evaluates the expression with the given variable values
-    pub fn eval(&self, vars: &[u64]) -> VarInt {
+    pub(crate) fn eval_bits(&self, vars: &[u64]) -> VarInt {
         match self {
             Expr::Var(i) => vars[i.0].into(),
 
@@ -225,39 +225,62 @@ impl Expr {
 
             Expr::And(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::MAX, |x, y| x & y),
 
             Expr::Or(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ZERO, |x, y| x | y),
 
             Expr::Xor(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ZERO, |x, y| x ^ y),
 
             Expr::Add(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ZERO, |x, y| x + y),
 
             Expr::Mul(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ONE, |x, y| x * y),
 
-            Expr::Scale(v, e) => *v * e.eval(vars),
+            Expr::Scale(v, e) => *v * e.eval_bits(vars),
 
-            Expr::Not(e) => !e.eval(vars),
+            Expr::Not(e) => !e.eval_bits(vars),
         }
+    }
+
+    /// Evaluates the expression for the given variable values on `n` bits.
+    pub fn eval(&self, vars: &[u64], n: u8) -> u64 {
+        self.eval_bits(vars).get(make_mask(n))
+    }
+
+    /// Checks, by random sampling on `n` bits, whether two expressions are
+    /// semantically equal. On a counterexample returns the sampled variable
+    /// values and the two differing evaluations.
+    pub fn sem_equal(
+        &self,
+        other: &Expr,
+        n: u8,
+        samples: usize,
+    ) -> Result<(), (Vec<u64>, u64, u64)> {
+        self.sem_equal_masked(other, make_mask(n), samples)
+    }
+
+    /// The truth table of this expression over its first `t` variables on `n`
+    /// bits (one entry per assignment of the `t` variables to 0/1).
+    pub fn truth_table(&self, t: usize, n: u8) -> Vec<u64> {
+        self.truth_table_masked(t, make_mask(n))
     }
 
     /// Checks if two expressions are semantically equal
     /// In case of error returns the variables that caused the error
     /// as well as the evaluations of self and other
-    pub fn sem_equal(
+    pub(crate) fn sem_equal_masked(
         &self,
         other: &Expr,
         mask: u64,
@@ -282,8 +305,8 @@ impl Expr {
         for _ in 0..count {
             let vars: Vec<_> = (0..=t).map(|_| random_range(0..=mask)).collect();
 
-            let v1 = self.eval(&vars).get(mask);
-            let v2 = other.eval(&vars).get(mask);
+            let v1 = self.eval_bits(&vars).get(mask);
+            let v2 = other.eval_bits(&vars).get(mask);
 
             if v1 != v2 {
                 return Err((vars, v1, v2));
@@ -294,7 +317,7 @@ impl Expr {
     }
 
     /// Calculates the truth table of an expression on n values with t variables
-    pub fn truth_table(&self, t: usize, mask: u64) -> Vec<u64> {
+    pub(crate) fn truth_table_masked(&self, t: usize, mask: u64) -> Vec<u64> {
         // if t > 20 {
         //     panic!("CRAZYY");
         // }
@@ -333,14 +356,14 @@ impl Expr {
 
         for i in 0..size {
             vars_from_i(i, &mut vars);
-            tt.push(self.eval(&vars).get(mask));
+            tt.push(self.eval_bits(&vars).get(mask));
         }
 
         tt
     }
 
     /// Calls a function recursively on each node of an expression
-    pub fn visit<T, F>(&self, mut f: F) -> T
+    pub(crate) fn visit<T, F>(&self, mut f: F) -> T
     where
         F: FnMut(&Expr, Vec<T>) -> T + Clone,
     {
@@ -403,7 +426,7 @@ impl Expr {
         }
     }
 
-    pub fn symbol(&self, latex: bool) -> &str {
+    pub(crate) fn symbol(&self, latex: bool) -> &str {
         match (self, latex) {
             (Expr::Var(_), _) | (Expr::Const(_), _) => "",
 
@@ -430,8 +453,8 @@ impl Expr {
     }
 
     /// A string representation of this expression
-    pub fn repr(&self, n: u8, mask: u64, hex: bool, latex: bool) -> String {
-        let recurs = |e: &Expr| e.parenthesize(self, e.repr(n, mask, hex, latex));
+    pub(crate) fn repr_masked(&self, n: u8, mask: u64, hex: bool, latex: bool) -> String {
+        let recurs = |e: &Expr| e.parenthesize(self, e.repr_masked(n, mask, hex, latex));
 
         let join = |exprs: &Vec<Expr>, c: &str| {
             exprs
@@ -472,9 +495,9 @@ impl Expr {
         }
     }
 
-    // Is this a constant
-    pub fn is_constant(&self) -> bool {
-        matches!(self, Expr::Const(_))
+    /// A string representation of this expression on `n` bits.
+    pub fn repr(&self, n: u8, hex: bool, latex: bool) -> String {
+        self.repr_masked(n, make_mask(n), hex, latex)
     }
 
     // Is this a bitwise expression
@@ -510,28 +533,15 @@ impl Expr {
     }
 
     // Replaces a given var with another expression
-    pub fn replace_var(self, target_var: VarId, replacement: &Expr) -> Self {
+    pub(crate) fn replace_var(self, target_var: VarId, replacement: &Expr) -> Self {
         match self {
             Expr::Var(v) if v == target_var => replacement.clone(),
             _ => self.map(|e| e.replace_var(target_var, replacement)),
         }
     }
 
-    /// Is the outer most expression a boolean expression
-    pub fn is_bool(&self) -> bool {
-        matches!(
-            self,
-            Expr::Not(_) | Expr::And(_) | Expr::Or(_) | Expr::Xor(_)
-        )
-    }
-
-    /// Is the outer most expression an arithmetic expression
-    pub fn is_arithmetic(&self) -> bool {
-        matches!(self, Expr::Add(_) | Expr::Mul(_) | Expr::Scale(_, _))
-    }
-
     // Helper recusive function that needs a reference
-    pub fn map<F>(self, mut f: F) -> Self
+    pub(crate) fn map<F>(self, mut f: F) -> Self
     where
         F: FnMut(Self) -> Self,
     {
@@ -555,7 +565,7 @@ impl Expr {
     /// children, short-circuiting on the first error. Lets the solver's
     /// recursive rewrites return `Result` without hand-rolling the match at
     /// each site.
-    pub fn try_map<F, E>(self, mut f: F) -> Result<Self, E>
+    pub(crate) fn try_map<F, E>(self, mut f: F) -> Result<Self, E>
     where
         F: FnMut(Self) -> Result<Self, E>,
     {

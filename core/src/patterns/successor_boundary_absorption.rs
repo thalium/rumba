@@ -22,7 +22,7 @@ impl Pattern for SuccessorBoundaryAbsorption {
         }
 
         for (predecessor_idx, predecessor) in children.iter().enumerate() {
-            let successor = (predecessor.clone() + Expr::make_const(1)).reduce(mask);
+            let successor = (predecessor.clone() + Expr::make_const(1)).reduce_masked(mask);
             let Some(successor_idx) = children
                 .iter()
                 .enumerate()
@@ -47,7 +47,7 @@ impl Pattern for SuccessorBoundaryAbsorption {
         // parent and there is no direct predecessor child. Restrict this more
         // expensive path to successors for which `A - 1` is exactly an And.
         for (successor_idx, successor) in children.iter().enumerate() {
-            let predecessor = (successor.clone() - Expr::make_const(1)).reduce(mask);
+            let predecessor = (successor.clone() - Expr::make_const(1)).reduce_masked(mask);
             let Expr::And(factors) = predecessor else {
                 continue;
             };

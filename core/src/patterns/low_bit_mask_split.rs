@@ -91,7 +91,7 @@ impl Pattern for LowBitMaskSplit {
                     .collect();
                 // `collapsed` may be a scaled sum, and may combine with a kept
                 // term, so re-canonicalize.
-                return Some(Expr::Add(kept).reduce(mask));
+                return Some(Expr::Add(kept).reduce_masked(mask));
             }
         }
 

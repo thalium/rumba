@@ -2,15 +2,13 @@
 
 use std::time::{Duration, Instant};
 
-use rumba_core::{expr::Expr, parser::parse_expr, simplify, varint::make_mask};
+use rumba_core::{expr::Expr, parser::parse_expr, simplify};
 
 /// The number of semantic tests to run
 const SEMANTIC_TEST_COUNT: usize = 200;
 
 /// The bit count for the experiments
 const BIT_COUNT: u8 = 64;
-
-const MASK: u64 = make_mask(BIT_COUNT);
 
 /// Simiplification status
 enum Status {
@@ -77,7 +75,7 @@ impl Experiment {
             };
         };
 
-        if let Err((_, v1, v2)) = simplified_mba.sem_equal(&self.gt, MASK, SEMANTIC_TEST_COUNT) {
+        if let Err((_, v1, v2)) = simplified_mba.sem_equal(&self.gt, BIT_COUNT, SEMANTIC_TEST_COUNT) {
             assert_eq!(
                 v1, v2,
                 "{}:{} semantic error mba: {}, gt: {}",
@@ -99,7 +97,7 @@ impl Experiment {
         if simplified_mba == gt_produced {
             status = Status::Ok;
         } else {
-            let diff = (self.mba.clone() - self.gt.clone()).reduce(MASK);
+            let diff = (self.mba.clone() - self.gt.clone()).reduce(BIT_COUNT);
             let diff_produced = simplify::simplify_mba(diff, BIT_COUNT);
             if diff_produced == Ok(Expr::zero()) {
                 status = Status::OkZ;

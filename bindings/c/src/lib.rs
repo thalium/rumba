@@ -6,7 +6,6 @@ use std::slice;
 use rumba_core::expr::Expr;
 use rumba_core::lang::{self, Insn, Program};
 use rumba_core::simplify::simplify_mba;
-use rumba_core::varint::make_mask;
 
 #[cfg(feature = "parse")]
 use rumba_core::parser::parse_expr;
@@ -126,7 +125,7 @@ pub unsafe extern "C" fn rumba_expr_free(ptr: *mut c_void) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_reduce(ptr: *mut c_void, n: u8) -> *mut c_void {
     let expr = unsafe { take_ownership(ptr) };
-    make_expr_ptr(expr.reduce(make_mask(n)))
+    make_expr_ptr(expr.reduce(n))
 }
 
 /// Simplifies the MBA in `ptr` modulo 2^`n`
@@ -154,7 +153,7 @@ pub unsafe extern "C" fn rumba_expr_eval(
 ) -> u64 {
     let expr = unsafe { to_ref::<Expr>(ptr) };
     let vars = unsafe { vec_from_ptr(arr, len) };
-    expr.eval(vars).get(make_mask(n))
+    expr.eval(vars, n)
 }
 
 /// Counts the number of nodes in the expression `ptr`
@@ -177,7 +176,6 @@ pub unsafe extern "C" fn rumba_expr_repr(
     let expr = unsafe { to_ref::<Expr>(ptr) };
     let s = expr.repr(
         n,
-        make_mask(n),
         (flags & RUMBA_EXPR_REPR_FLAG_HEX) != 0,
         (flags & RUMBA_EXPR_REPR_FLAG_LATEX) != 0,
     );
@@ -483,7 +481,7 @@ pub unsafe extern "C" fn rumba_program_simplify(p: *mut c_void) -> u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_program_size(p: *mut c_void) -> usize {
     let p: &mut Program = unsafe { to_mut_ref(p) };
-    p.insns.len()
+    p.len()
 }
 
 /// Returns the i-th instructions in a program
@@ -493,8 +491,8 @@ pub unsafe extern "C" fn rumba_program_size(p: *mut c_void) -> usize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_program_get(p: *mut c_void, i: usize) -> *const c_void {
     let p: &mut Program = unsafe { to_mut_ref(p) };
-    match p.insns.get_index(i) {
-        Some((_, insn)) => to_ptr(insn),
+    match p.get_index(i) {
+        Some(insn) => to_ptr(insn),
         None => null(),
     }
 }

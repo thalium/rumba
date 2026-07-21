@@ -1,6 +1,6 @@
 use std::panic;
 
-use rumba_core::{expr::Expr, simplify, varint::make_mask};
+use rumba_core::{expr::Expr, simplify};
 
 #[cfg(feature = "parse")]
 use rumba_core::parser::parse_expr;
@@ -66,7 +66,7 @@ impl ExprWasm {
     #[wasm_bindgen]
     pub fn reduce(&self, n: u8) -> Self {
         Self {
-            inner: self.inner.clone().reduce(make_mask(n)),
+            inner: self.inner.clone().reduce(n),
         }
     }
 
@@ -154,18 +154,17 @@ impl ExprWasm {
     #[allow(clippy::boxed_local)]
     pub fn eval(&self, vars: Box<[u64]>, bits: u8) -> u64 {
         let vars = vars.to_vec();
-        self.inner.eval(&vars).get(make_mask(bits))
+        self.inner.eval(&vars, bits)
     }
 
     #[wasm_bindgen]
     pub fn truth_table(&self, n: u8, t: usize) -> Box<[u64]> {
-        let mask = make_mask(n);
-        self.inner.truth_table(t, mask).into_boxed_slice()
+        self.inner.truth_table(t, n).into_boxed_slice()
     }
 
     #[wasm_bindgen]
     pub fn repr(&self, n: u8, hex: bool, latex: bool) -> String {
-        self.inner.repr(n, make_mask(n), hex, latex)
+        self.inner.repr(n, hex, latex)
     }
 
     #[wasm_bindgen]
@@ -183,7 +182,7 @@ impl ExprWasm {
     #[wasm_bindgen]
     pub fn simplify(&self, n: u8) -> ExprWasm {
         ExprWasm {
-            inner: self.inner.clone().reduce(make_mask(n)),
+            inner: self.inner.clone().reduce(n),
         }
     }
 }

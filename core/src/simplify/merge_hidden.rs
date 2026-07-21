@@ -49,7 +49,7 @@ fn passes_quick_zero_check(e: &Expr, mask: u64) -> bool {
                 }
             };
         }
-        if e.eval(&variables).get(mask) != 0 {
+        if e.eval_bits(&variables).get(mask) != 0 {
             return false;
         }
     }
@@ -143,7 +143,7 @@ fn make_signature_samples(expressions: &[Expr], mask: u64) -> Option<Vec<Vec<u64
     }
     let mut samples: Vec<_> = reduced
         .iter()
-        .map(|expression| expression.truth_table(variable_count, mask))
+        .map(|expression| expression.truth_table_masked(variable_count, mask))
         .collect();
     for sample in 0..3u64 {
         let variables: Vec<_> = (0..variable_count)
@@ -155,7 +155,7 @@ fn make_signature_samples(expressions: &[Expr], mask: u64) -> Option<Vec<Vec<u64
             })
             .collect();
         for (values, expression) in samples.iter_mut().zip(&reduced) {
-            values.push(expression.eval(&variables).get(mask));
+            values.push(expression.eval_bits(&variables).get(mask));
         }
     }
     Some(samples)
@@ -188,7 +188,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             Expr::Not(inner) => left + *inner + Expr::make_const(1),
             right => left - right,
         };
-        let difference = self.expand_hidden_components(difference).reduce(self.mask);
+        let difference = self.expand_hidden_components(difference).reduce_masked(self.mask);
         if !passes_quick_zero_check(&difference, self.mask) {
             return false;
         }
@@ -354,7 +354,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             }
         }
 
-        replace_aliases(e, &aliases).reduce(self.mask)
+        replace_aliases(e, &aliases).reduce_masked(self.mask)
     }
 }
 
@@ -379,7 +379,7 @@ mod tests {
                 } else {
                     mask
                 };
-                assert_eq!(expression.eval(&variables).get(mask), expected);
+                assert_eq!(expression.eval_bits(&variables).get(mask), expected);
             }
         }
     }

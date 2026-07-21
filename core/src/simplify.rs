@@ -2,13 +2,14 @@ use std::{cmp::max, collections::HashSet};
 
 use crate::{
     utils::bimap::BiMap,
-    utils::cache::{LinearCache, LocalCache},
-    utils::error::SolveError,
+    utils::cache::{LinearCache, LocalCache, MbaCache},
     expr::{Expr, VarId},
     varint::{VarInt, make_mask},
 };
 
 use log::debug;
+
+pub use crate::utils::error::SolveError;
 
 mod lambda;
 mod merge_hidden;
@@ -17,7 +18,7 @@ use lambda::{find_lambda_int, find_two_lambdas_int};
 
 /// The largest number of variables a linear MBA may carry into the truth-table
 /// solve. The signature is `2^t` wide, so this bounds one solve at 1M entries.
-pub const MAX_VARS: usize = 20;
+pub(crate) const MAX_VARS: usize = 20;
 
 const MAX_SIMPLIFICATION_PASSES: usize = 8;
 
@@ -123,7 +124,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// Solves a non polynomial MBA
     fn solve(&mut self, e: Expr) -> Result<Expr, SolveError> {
         // TODO: Remove this only needs to be done once
-        let e = e.reduce(self.mask);
+        let e = e.reduce_masked(self.mask);
 
         // Non-polynomial stage: structural pattern rewrites on the canonical
         // expression, before it is lifted to a polynomial.
@@ -139,7 +140,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         if self.non_linear_components.len() != 0 {
             let e = self.poly_to_nonpoly(p);
             debug!("After adding non linear components, found: {}", e);
-            Ok(e.reduce(self.mask))
+            Ok(e.reduce_masked(self.mask))
         } else {
             Ok(p)
         }
@@ -147,7 +148,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
     /// Calcluates the signature of a linear MBA
     fn calc_signature(&self, e: &Expr, t: usize) -> Vec<u64> {
-        e.truth_table(t, self.mask)
+        e.truth_table_masked(t, self.mask)
     }
 
     /// Creates a conjuction sum for the given signature
@@ -356,7 +357,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         let e = self.poly_to_linear(e, 0);
         let e: Expr = self.solve_linear(e, true)?;
-        let e = self.linear_to_poly(e)?.reduce(self.mask);
+        let e = self.linear_to_poly(e)?.reduce_masked(self.mask);
 
         debug!("Found polynomial solution: {}", e);
 
@@ -369,10 +370,10 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         let e = match e {
             Expr::Const(_) => e,
-            _ => simplify_mba_inner(self.l_cache, e, mask.count_ones() as u8)?.reduce(mask),
+            _ => simplify_mba_inner(self.l_cache, e, mask.count_ones() as u8)?.reduce_masked(mask),
         };
 
-        let note = (-e.clone() - Expr::make_const(1)).reduce(mask);
+        let note = (-e.clone() - Expr::make_const(1)).reduce_masked(mask);
         debug!("!e would be {}", note);
 
         if let Some(v) = self.non_linear_components.get_by_right(&e) {
@@ -501,7 +502,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             return None;
         }
 
-        let s = e.truth_table(t, mask);
+        let s = e.truth_table_masked(t, mask);
 
         if self.is_signature_bitwise(&s, mask) {
             debug!("Will treat {} as a bitwise expression", e);
@@ -689,24 +690,41 @@ where
     Ok(best)
 }
 
-// I should probably add a flag for recursive simplification
+/// A reusable memo of solved linear MBAs.
+///
+/// Simplifying an expression solves many linear sub-MBAs; a `SimplifyCache`
+/// remembers those solutions so that a caller simplifying many expressions — or
+/// the same ones repeatedly across rounds of an analysis — pays for each distinct
+/// linear solve once. Create one with [`SimplifyCache::new`] and hand it to
+/// [`simplify_mba_cached`]. It is safe to share one across threads.
+#[derive(Debug, Default)]
+pub struct SimplifyCache(MbaCache);
+
+impl SimplifyCache {
+    /// An empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Simplifies a Mixed Boolean-Arithmetic expression on `n` bits.
 pub fn simplify_mba(e: Expr, n: u8) -> Result<Expr, SolveError> {
     simplify_mba_with_cache(&LocalCache::new(), e, n)
 }
 
-/// [`simplify_mba`] against a caller-owned cache.
-///
-/// Solved linear MBAs are memoized in `cache`, so a caller that simplifies many
-/// expressions — or the same expressions repeatedly across rounds of an analysis
-/// — pays for each distinct linear solve once. Pass a [`LocalCache`] to reuse
-/// results on one thread, or an [`MbaCache`] to share them across several.
-pub fn simplify_mba_with_cache<C: LinearCache>(
+/// [`simplify_mba`] against a caller-owned [`SimplifyCache`], so linear solves
+/// are reused across calls.
+pub fn simplify_mba_cached(e: Expr, n: u8, cache: &SimplifyCache) -> Result<Expr, SolveError> {
+    simplify_mba_with_cache(&cache.0, e, n)
+}
+
+fn simplify_mba_with_cache<C: LinearCache>(
     cache: &C,
     e: Expr,
     n: u8,
 ) -> Result<Expr, SolveError> {
     let mask = make_mask(n);
-    let e = e.reduce(mask);
+    let e = e.reduce_masked(mask);
     simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n))
 }
 

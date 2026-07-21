@@ -22,7 +22,7 @@ pub(super) struct NestedBitwiseIdentity;
 impl NestedBitwiseIdentity {
     /// `-e`, canonicalized, so it compares equal to a reduced sibling.
     fn negate(e: &Expr, mask: u64) -> Expr {
-        Expr::scale(VarInt::from(mask), e.clone()).reduce(mask)
+        Expr::scale(VarInt::from(mask), e.clone()).reduce_masked(mask)
     }
 
     /// For a redundant conjunct `-(c0 & c1)`, returns the sibling expressions

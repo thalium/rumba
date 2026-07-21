@@ -2,7 +2,6 @@ use pyo3::exceptions;
 use pyo3::prelude::*;
 use rumba_core::expr;
 use rumba_core::simplify::simplify_mba;
-use rumba_core::varint::make_mask;
 
 #[cfg(feature = "parse")]
 use rumba_core::parser::parse_expr;
@@ -83,13 +82,13 @@ impl Expr {
 
     /// Evaluates an expression with the given variables
     fn eval(&self, vars: Vec<u64>, n: u8) -> u64 {
-        self.inner.eval(&vars).get(make_mask(n))
+        self.inner.eval(&vars, n)
     }
 
     /// Perform arithmetic reduction on this expression
     fn reduce(&mut self, n: u8) -> Self {
         Self {
-            inner: self.inner.clone().reduce(make_mask(n)),
+            inner: self.inner.clone().reduce(n),
         }
     }
 
@@ -119,7 +118,7 @@ impl Expr {
 
     /// A string representation of the expression
     fn repr(&self, bits: u8, hex: bool, latex: bool) -> String {
-        self.inner.repr(bits, make_mask(bits), hex, latex)
+        self.inner.repr(bits, hex, latex)
     }
 
     // Arithmetic operators

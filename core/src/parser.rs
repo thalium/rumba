@@ -207,9 +207,9 @@ u8 v5 = unknown(v4)
         println!("Program:\n{}", program);
 
         // Optional: basic assertions
-        assert_eq!(program.insns.len(), 6);
+        assert_eq!(program.len(), 6);
         assert_eq!(
-            program.insns[0],
+            *program.get_index(0).unwrap(),
             Insn {
                 ty: 8,
                 id: 0.into(),
@@ -217,7 +217,7 @@ u8 v5 = unknown(v4)
             }
         );
         assert_eq!(
-            program.insns[1],
+            *program.get_index(1).unwrap(),
             Insn {
                 ty: 8,
                 id: 1.into(),
@@ -225,7 +225,7 @@ u8 v5 = unknown(v4)
             }
         );
         assert_eq!(
-            program.insns[2],
+            *program.get_index(2).unwrap(),
             Insn {
                 ty: 8,
                 id: 2.into(),
@@ -233,7 +233,7 @@ u8 v5 = unknown(v4)
             }
         );
         assert_eq!(
-            program.insns[3],
+            *program.get_index(3).unwrap(),
             Insn {
                 ty: 8,
                 id: 3.into(),
@@ -241,7 +241,7 @@ u8 v5 = unknown(v4)
             }
         );
         assert_eq!(
-            program.insns[4],
+            *program.get_index(4).unwrap(),
             Insn {
                 ty: 8,
                 id: 4.into(),
@@ -251,7 +251,7 @@ u8 v5 = unknown(v4)
             }
         );
         assert_eq!(
-            program.insns[5],
+            *program.get_index(5).unwrap(),
             Insn {
                 ty: 8,
                 id: 5.into(),

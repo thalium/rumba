@@ -32,7 +32,7 @@ impl Pattern for LowBitRemainder {
                         continue;
                     }
 
-                    let remainder = (x.clone() - low_bit.clone()).reduce(mask);
+                    let remainder = (x.clone() - low_bit.clone()).reduce_masked(mask);
                     if *other == remainder {
                         let mut kept = children.clone();
                         kept.remove(x_idx);
@@ -40,7 +40,7 @@ impl Pattern for LowBitRemainder {
                     }
 
                     let reconstruction =
-                        (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce(mask);
+                        (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce_masked(mask);
                     if *other == reconstruction {
                         let mut kept: Vec<_> = children
                             .iter()
@@ -49,7 +49,7 @@ impl Pattern for LowBitRemainder {
                             .map(|(_, child)| child.clone())
                             .collect();
                         kept.push(low_bit.clone());
-                        return Some(rebuild_and(kept).reduce(mask));
+                        return Some(rebuild_and(kept).reduce_masked(mask));
                     }
                 }
             }

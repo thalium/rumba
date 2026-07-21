@@ -4,12 +4,13 @@
 // explicit, message-carrying `expect()`. Tests may still unwrap freely.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::panic))]
 
-pub mod utils;
 pub mod expr;
-pub mod patterns;
-pub mod reduce;
 pub mod simplify;
-pub mod varint;
+
+pub(crate) mod patterns;
+pub(crate) mod reduce;
+pub(crate) mod utils;
+pub(crate) mod varint;
 
 #[cfg(feature = "jit")]
 pub mod jit;

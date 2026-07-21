@@ -84,7 +84,7 @@ fn split(e: &Expr, mask: u64) -> (u64, Expr) {
 
 /// `coefficient * e`, reduced into the same canonical form seen by patterns.
 fn scaled(e: &Expr, coefficient: u64, mask: u64) -> Expr {
-    Expr::scale(VarInt::from(coefficient), e.clone()).reduce(mask)
+    Expr::scale(VarInt::from(coefficient), e.clone()).reduce_masked(mask)
 }
 
 /// The canonical arithmetic negation of `e`.
@@ -118,7 +118,7 @@ fn additive_coefficients(e: &Expr, mask: u64) -> BTreeMap<Expr, u64> {
 /// factor/core matcher remains as a fallback for uniformly even expressions.
 fn scale_relation(candidate: &Expr, base: &Expr, mask: u64) -> Option<u64> {
     let arithmetic = |e: &Expr| match e {
-        Expr::Not(inner) => (-inner.as_ref().clone() - Expr::make_const(1)).reduce(mask),
+        Expr::Not(inner) => (-inner.as_ref().clone() - Expr::make_const(1)).reduce_masked(mask),
         _ => e.clone(),
     };
     let candidate = additive_coefficients(&arithmetic(candidate), mask);
@@ -144,7 +144,7 @@ fn scale_relation(candidate: &Expr, base: &Expr, mask: u64) -> Option<u64> {
 
 fn are_negations(a: &Expr, b: &Expr, mask: u64) -> bool {
     let arithmetic = |e: &Expr| match e {
-        Expr::Not(inner) => (-inner.as_ref().clone() - Expr::make_const(1)).reduce(mask),
+        Expr::Not(inner) => (-inner.as_ref().clone() - Expr::make_const(1)).reduce_masked(mask),
         _ => e.clone(),
     };
     let a = arithmetic(a);
@@ -281,7 +281,7 @@ mod tests {
     /// `X & -X & (m·X)` reduced, then run through the pattern pass.
     fn annihilate(x: Expr, m: u64) -> Expr {
         let mask = make_mask(N);
-        let e = (x.clone() & (-x.clone()) & (m * x)).reduce(mask);
+        let e = (x.clone() & (-x.clone()) & (m * x)).reduce_masked(mask);
         apply_patterns(e, mask)
     }
 
@@ -328,7 +328,7 @@ mod tests {
     fn fires_within_larger_and() {
         let mask = make_mask(N);
         let x = var(0);
-        let e = (var(1) & x.clone() & (-x.clone()) & (2u64 * x) & var(2)).reduce(mask);
+        let e = (var(1) & x.clone() & (-x.clone()) & (2u64 * x) & var(2)).reduce_masked(mask);
         assert_eq!(apply_patterns(e, mask), Expr::zero());
     }
 
@@ -337,7 +337,7 @@ mod tests {
         // 3·X is an odd multiple: the identity does NOT hold.
         let mask = make_mask(N);
         let x = var(0);
-        let e = (x.clone() & (-x.clone()) & (3u64 * x)).reduce(mask);
+        let e = (x.clone() & (-x.clone()) & (3u64 * x)).reduce_masked(mask);
         assert_ne!(apply_patterns(e.clone(), mask), Expr::zero());
     }
 
@@ -345,14 +345,14 @@ mod tests {
     fn ignores_missing_negation() {
         let mask = make_mask(N);
         let x = var(0);
-        let e = (x.clone() & (2u64 * x)).reduce(mask);
+        let e = (x.clone() & (2u64 * x)).reduce_masked(mask);
         assert_ne!(apply_patterns(e.clone(), mask), Expr::zero());
     }
 
     #[test]
     fn ignores_unrelated_and() {
         let mask = make_mask(N);
-        let e = (var(0) & var(1) & (2u64 * var(2))).reduce(mask);
+        let e = (var(0) & var(1) & (2u64 * var(2))).reduce_masked(mask);
         let out = apply_patterns(e.clone(), mask);
         assert_eq!(out, e);
     }
@@ -363,9 +363,9 @@ mod tests {
         let mask = make_mask(N);
         for m in [2u64, 4, 6, 8, 10, 1 << 20] {
             let x = var(0);
-            let e = (x.clone() & (-x.clone()) & (m * x)).reduce(mask);
+            let e = (x.clone() & (-x.clone()) & (m * x)).reduce_masked(mask);
             assert!(
-                e.sem_equal(&Expr::zero(), mask, 500).is_ok(),
+                e.sem_equal_masked(&Expr::zero(), mask, 500).is_ok(),
                 "m={m} not semantically zero"
             );
         }
@@ -374,14 +374,14 @@ mod tests {
     /// `(X & -X) & (m·X - 1)` reduced, then run through the pattern pass.
     fn redundant_mask(x: Expr, m: u64) -> Expr {
         let mask = make_mask(N);
-        let e = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce(mask);
+        let e = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce_masked(mask);
         apply_patterns(e, mask)
     }
 
     #[test]
     fn mask_reduces_to_low_bit() {
         let mask = make_mask(N);
-        let expected = (var(0) & (-var(0))).reduce(mask);
+        let expected = (var(0) & (-var(0))).reduce_masked(mask);
         for m in [2u64, 4, 6, 8, 10, 1 << 20] {
             assert_eq!(redundant_mask(var(0), m), expected, "m={m}");
         }
@@ -391,7 +391,7 @@ mod tests {
     fn redundant_mask_fires_on_affine_core() {
         let mask = make_mask(N);
         let x = var(0) - var(1);
-        let expected = (x.clone() & (-x.clone())).reduce(mask);
+        let expected = (x.clone() & (-x.clone())).reduce_masked(mask);
         for m in [2u64, 4, 6, 10] {
             assert_eq!(redundant_mask(x.clone(), m), expected, "m={m}");
         }
@@ -403,8 +403,8 @@ mod tests {
         let x = var(0);
         let e =
             (var(1) & x.clone() & (-x.clone()) & (6u64 * x.clone() - Expr::make_const(1)) & var(2))
-                .reduce(mask);
-        let expected = (var(1) & x.clone() & (-x.clone()) & var(2)).reduce(mask);
+                .reduce_masked(mask);
+        let expected = (var(1) & x.clone() & (-x.clone()) & var(2)).reduce_masked(mask);
         assert_eq!(apply_patterns(e, mask), expected);
     }
 
@@ -413,8 +413,8 @@ mod tests {
         // `3·X - 1` is not zero across the low bits: identity does not hold.
         let mask = make_mask(N);
         let x = var(0);
-        let e = (x.clone() & (-x.clone()) & (3u64 * x - Expr::make_const(1))).reduce(mask);
-        let expected = (var(0) & (-var(0))).reduce(mask);
+        let e = (x.clone() & (-x.clone()) & (3u64 * x - Expr::make_const(1))).reduce_masked(mask);
+        let expected = (var(0) & (-var(0))).reduce_masked(mask);
         assert_ne!(apply_patterns(e, mask), expected);
     }
 
@@ -422,7 +422,7 @@ mod tests {
     fn mask_ignores_missing_negation() {
         let mask = make_mask(N);
         let x = var(0);
-        let e = (x.clone() & (2u64 * x - Expr::make_const(1))).reduce(mask);
+        let e = (x.clone() & (2u64 * x - Expr::make_const(1))).reduce_masked(mask);
         assert_eq!(apply_patterns(e.clone(), mask), e);
     }
 
@@ -431,10 +431,10 @@ mod tests {
         let mask = make_mask(N);
         for m in [2u64, 4, 6, 8, 10, 1 << 20] {
             let x = var(0);
-            let before = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce(mask);
+            let before = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce_masked(mask);
             let after = apply_patterns(before.clone(), mask);
             assert!(
-                before.sem_equal(&after, mask, 500).is_ok(),
+                before.sem_equal_masked(&after, mask, 500).is_ok(),
                 "m={m} rewrite changed semantics"
             );
         }
@@ -444,9 +444,9 @@ mod tests {
     fn low_bit_remainder_is_absorbed_by_base() {
         let mask = make_mask(N);
         for x in [var(0), var(0) - var(1), var(0) + 2u64 * var(1)] {
-            let low_bit = (x.clone() & (-x.clone())).reduce(mask);
-            let remainder = (x.clone() - low_bit).reduce(mask);
-            let before = (x & remainder.clone()).reduce(mask);
+            let low_bit = (x.clone() & (-x.clone())).reduce_masked(mask);
+            let remainder = (x.clone() - low_bit).reduce_masked(mask);
+            let before = (x & remainder.clone()).reduce_masked(mask);
             assert_eq!(apply_patterns(before, mask), remainder);
         }
     }
@@ -455,9 +455,9 @@ mod tests {
     fn low_bit_is_reconstructed_from_complementary_mask() {
         let mask = make_mask(N);
         for x in [var(0), var(0) - var(1), var(0) + 2u64 * var(1)] {
-            let low_bit = (x.clone() & (-x.clone())).reduce(mask);
-            let complementary = (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce(mask);
-            let before = (x & complementary).reduce(mask);
+            let low_bit = (x.clone() & (-x.clone())).reduce_masked(mask);
+            let complementary = (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce_masked(mask);
+            let before = (x & complementary).reduce_masked(mask);
             assert_eq!(apply_patterns(before, mask), low_bit);
         }
     }
@@ -471,10 +471,10 @@ mod tests {
             var(0) & var(1),
             var(0) + (var(0) & var(1)),
         ] {
-            let successor = (x.clone() + Expr::make_const(1)).reduce(mask);
+            let successor = (x.clone() + Expr::make_const(1)).reduce_masked(mask);
             for multiple in [2u64, 4, 6, mask - 1] {
-                let boundary = (successor.clone() & multiple * successor.clone()).reduce(mask);
-                let before = (x.clone() & boundary.clone()).reduce(mask);
+                let boundary = (successor.clone() & multiple * successor.clone()).reduce_masked(mask);
+                let before = (x.clone() & boundary.clone()).reduce_masked(mask);
                 assert_eq!(
                     apply_patterns(before, mask),
                     boundary,
@@ -488,8 +488,8 @@ mod tests {
     fn successor_boundary_keeps_odd_multiple() {
         let mask = make_mask(N);
         let x = var(0) - var(1);
-        let successor = (x.clone() + Expr::make_const(1)).reduce(mask);
-        let before = (x & successor.clone() & 3u64 * successor).reduce(mask);
+        let successor = (x.clone() + Expr::make_const(1)).reduce_masked(mask);
+        let before = (x & successor.clone() & 3u64 * successor).reduce_masked(mask);
         assert_eq!(apply_patterns(before.clone(), mask), before);
     }
 
@@ -497,7 +497,7 @@ mod tests {
     fn mask_split(x: Expr, a: u64, m: u64) -> Expr {
         let mask = make_mask(N);
         let mm = m * x.clone() - Expr::make_const(1);
-        let e = (a * (x.clone() & mm.clone()) + a * ((-x) & mm)).reduce(mask);
+        let e = (a * (x.clone() & mm.clone()) + a * ((-x) & mm)).reduce_masked(mask);
         apply_patterns(e, mask)
     }
 
@@ -506,7 +506,7 @@ mod tests {
         let mask = make_mask(N);
         for a in [1u64, 3, 5] {
             for m in [2u64, 4, 6, 8, 10] {
-                let expected = (a * (m * var(0))).reduce(mask);
+                let expected = (a * (m * var(0))).reduce_masked(mask);
                 assert_eq!(mask_split(var(0), a, m), expected, "a={a} m={m}");
             }
         }
@@ -517,9 +517,9 @@ mod tests {
         let mask = make_mask(N);
         for x in [var(0), var(0) - var(1), var(0) + Expr::make_const(1)] {
             for multiple in [2u64, 4, 6, 10] {
-                let boundary = (multiple * x.clone()).reduce(mask);
+                let boundary = (multiple * x.clone()).reduce_masked(mask);
                 let before = ((x.clone() & boundary.clone()) + ((-x.clone()) & boundary.clone()))
-                    .reduce(mask);
+                    .reduce_masked(mask);
                 assert_eq!(apply_patterns(before, mask), boundary);
             }
         }
@@ -532,10 +532,10 @@ mod tests {
             for m in [2u64, 4, 6, 12, 1 << 10] {
                 let x = var(0);
                 let mm = m * x.clone() - Expr::make_const(1);
-                let before = (a * (x.clone() & mm.clone()) + a * ((-x) & mm)).reduce(mask);
+                let before = (a * (x.clone() & mm.clone()) + a * ((-x) & mm)).reduce_masked(mask);
                 let after = apply_patterns(before.clone(), mask);
                 assert!(
-                    before.sem_equal(&after, mask, 500).is_ok(),
+                    before.sem_equal_masked(&after, mask, 500).is_ok(),
                     "a={a} m={m} rewrite changed semantics"
                 );
             }
@@ -547,7 +547,7 @@ mod tests {
         // X = 2·y carries its own coefficient.
         let mask = make_mask(N);
         let x = 2u64 * var(0);
-        let expected = (3u64 * (6u64 * x.clone())).reduce(mask);
+        let expected = (3u64 * (6u64 * x.clone())).reduce_masked(mask);
         assert_eq!(mask_split(x, 3, 6), expected);
     }
 
@@ -555,7 +555,7 @@ mod tests {
     fn split_fires_on_affine_core() {
         let mask = make_mask(N);
         let x = var(0) - var(1);
-        let expected = (3u64 * (6u64 * x.clone())).reduce(mask);
+        let expected = (3u64 * (6u64 * x.clone())).reduce_masked(mask);
         assert_eq!(mask_split(x, 3, 6), expected);
     }
 
@@ -565,8 +565,8 @@ mod tests {
         let x = var(0);
         let mm = 6u64 * x.clone() - Expr::make_const(1);
         let e =
-            (var(1) + 3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x.clone()) & mm)).reduce(mask);
-        let expected = (var(1) + 3u64 * (6u64 * x)).reduce(mask);
+            (var(1) + 3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x.clone()) & mm)).reduce_masked(mask);
+        let expected = (var(1) + 3u64 * (6u64 * x)).reduce_masked(mask);
         assert_eq!(apply_patterns(e, mask), expected);
     }
 
@@ -576,7 +576,7 @@ mod tests {
         let mask = make_mask(N);
         let x = var(0);
         let mm = 3u64 * x.clone() - Expr::make_const(1);
-        let e = (3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x) & mm)).reduce(mask);
+        let e = (3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x) & mm)).reduce_masked(mask);
         let out = apply_patterns(e.clone(), mask);
         assert_eq!(out, e);
     }
@@ -588,23 +588,23 @@ mod tests {
             Some(y) => x.clone() | y,
             None => x.clone(),
         };
-        let e = (x.clone() & (-(disj & (-x.clone())))).reduce(mask);
+        let e = (x.clone() & (-(disj & (-x.clone())))).reduce_masked(mask);
         apply_patterns(e, mask)
     }
 
     #[test]
     fn nested_collapses_y_absent() {
         let mask = make_mask(N);
-        assert_eq!(nested(var(0), None), var(0).reduce(mask));
+        assert_eq!(nested(var(0), None), var(0).reduce_masked(mask));
         // Works with a compound core `X = v0 + v1`.
         let x = var(0) + var(1);
-        assert_eq!(nested(x.clone(), None), x.reduce(mask));
+        assert_eq!(nested(x.clone(), None), x.reduce_masked(mask));
     }
 
     #[test]
     fn nested_collapses_y_present() {
         let mask = make_mask(N);
-        assert_eq!(nested(var(0), Some(var(1))), var(0).reduce(mask));
+        assert_eq!(nested(var(0), Some(var(1))), var(0).reduce_masked(mask));
     }
 
     #[test]
@@ -612,8 +612,8 @@ mod tests {
         let mask = make_mask(N);
         let x = var(0);
         let redundant = -((x.clone()) & (-x.clone()));
-        let e = (var(1) & x.clone() & redundant & var(2)).reduce(mask);
-        let expected = (var(1) & x.clone() & var(2)).reduce(mask);
+        let e = (var(1) & x.clone() & redundant & var(2)).reduce_masked(mask);
+        let expected = (var(1) & x.clone() & var(2)).reduce_masked(mask);
         assert_eq!(apply_patterns(e, mask), expected);
     }
 
@@ -626,10 +626,10 @@ mod tests {
                     Some(y) => x.clone() | y.clone(),
                     None => x.clone(),
                 };
-                let before = (x.clone() & (-(disj & (-x.clone())))).reduce(mask);
+                let before = (x.clone() & (-(disj & (-x.clone())))).reduce_masked(mask);
                 let after = apply_patterns(before.clone(), mask);
                 assert!(
-                    before.sem_equal(&after, mask, 500).is_ok(),
+                    before.sem_equal_masked(&after, mask, 500).is_ok(),
                     "rewrite changed semantics"
                 );
             }
@@ -641,7 +641,7 @@ mod tests {
         // Redundant conjunct present but the required sibling `X` is not.
         let mask = make_mask(N);
         let x = var(0);
-        let e = (var(1) & (-((x.clone()) & (-x.clone())))).reduce(mask);
+        let e = (var(1) & (-((x.clone()) & (-x.clone())))).reduce_masked(mask);
         assert_eq!(apply_patterns(e.clone(), mask), e);
     }
 
@@ -651,7 +651,7 @@ mod tests {
         let mask = make_mask(N);
         let x = var(0);
         let mm = 6u64 * x.clone() - Expr::make_const(1);
-        let e = (3u64 * (x.clone() & mm.clone()) + 5u64 * ((-x) & mm)).reduce(mask);
+        let e = (3u64 * (x.clone() & mm.clone()) + 5u64 * ((-x) & mm)).reduce_masked(mask);
         let out = apply_patterns(e.clone(), mask);
         assert_eq!(out, e);
     }

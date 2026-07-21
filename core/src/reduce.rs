@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::{expr::Expr, varint::VarInt};
+use crate::{
+    expr::Expr,
+    varint::{VarInt, make_mask},
+};
 
 /// Distributes an expression
 fn distribute<F>(
@@ -97,7 +100,7 @@ impl Reducer {
     {
         let mut flat = Vec::with_capacity(v.len());
 
-        let mut stack: Vec<_> = v.into_iter().map(|e| self.reduce(e)).collect();
+        let mut stack: Vec<_> = v.into_iter().map(|e| self.reduce_masked(e)).collect();
 
         while let Some(e) = stack.pop() {
             match handler(e) {
@@ -144,7 +147,7 @@ impl Reducer {
         out.sort();
 
         if initial_len > out.len() {
-            self.reduce(Expr::Add(out))
+            self.reduce_masked(Expr::Add(out))
         } else {
             Expr::Add(out)
         }
@@ -154,17 +157,17 @@ impl Reducer {
     fn reduce_not(&self, expr: Expr) -> Expr {
         match expr {
             // !!x = x
-            Expr::Not(x) => self.reduce(*x),
+            Expr::Not(x) => self.reduce_masked(*x),
 
             Expr::Const(v) => Expr::Const(!v),
 
             // De Morgan's laws
-            Expr::And(exprs) => Expr::Or(exprs.into_iter().map(|e| self.reduce(!e)).collect()),
+            Expr::And(exprs) => Expr::Or(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect()),
 
             // De Morgan's laws
-            Expr::Or(exprs) => Expr::And(exprs.into_iter().map(|e| self.reduce(!e)).collect()),
+            Expr::Or(exprs) => Expr::And(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect()),
 
-            _ => !self.reduce(expr),
+            _ => !self.reduce_masked(expr),
         }
     }
 
@@ -175,9 +178,9 @@ impl Reducer {
         match *scale {
             0 => Expr::zero(),
 
-            1 => self.reduce(expr),
+            1 => self.reduce_masked(expr),
 
-            _ => match self.reduce(expr) {
+            _ => match self.reduce_masked(expr) {
                 Expr::Const(c2) => Expr::Const((scale * c2).mask(self.mask)),
 
                 Expr::Scale(c2, e) => {
@@ -191,7 +194,7 @@ impl Reducer {
 
                 Expr::Add(sum) => {
                     // TODO: the arith reduce is unnecessary here
-                    self.reduce(Expr::Add(sum.into_iter().map(|e| scale * e).collect()))
+                    self.reduce_masked(Expr::Add(sum.into_iter().map(|e| scale * e).collect()))
                 }
 
                 other => scale * other,
@@ -223,7 +226,7 @@ impl Reducer {
         }
 
         if let Some(distributed) = distribute!(And, Xor, &mut flat) {
-            return self.reduce(distributed);
+            return self.reduce_masked(distributed);
         }
 
         flat = dedupe(flat);
@@ -254,7 +257,7 @@ impl Reducer {
         }
 
         if let Some(distributed) = distribute!(Or, And, &mut flat) {
-            return self.reduce(distributed);
+            return self.reduce_masked(distributed);
         }
 
         flat = dedupe(flat);
@@ -351,7 +354,7 @@ impl Reducer {
         }
 
         if let Some(distributed) = distribute!(Mul, Add, &mut flat) {
-            return self.reduce(Expr::scale(c, distributed));
+            return self.reduce_masked(Expr::scale(c, distributed));
         }
 
         flat.sort();
@@ -363,7 +366,7 @@ impl Reducer {
         }
     }
 
-    fn reduce(&self, expr: Expr) -> Expr {
+    fn reduce_masked(&self, expr: Expr) -> Expr {
         match expr {
             Expr::Var(_) => expr,
 
@@ -389,7 +392,7 @@ impl Reducer {
     //     let old = expr.clone();
     //     let res = self.reduce_(expr);
 
-    //     if let Err((v, v1, v2)) = old.sem_equal(&res, self.mask, 500) {
+    //     if let Err((v, v1, v2)) = old.sem_equal_masked(&res, self.mask, 500) {
     //         println!("Semantic error {} vs {}", old, res);
     //         println!("Semantic error {} vs {}", v1, v2);
     //         println!("{}\n\n", old.symbol(false));
@@ -399,7 +402,13 @@ impl Reducer {
 }
 
 impl Expr {
-    pub fn reduce(self, mask: u64) -> Self {
-        Reducer { mask }.reduce(self)
+    pub(crate) fn reduce_masked(self, mask: u64) -> Self {
+        Reducer { mask }.reduce_masked(self)
+    }
+
+    /// Canonicalizes the expression on `n` bits (constant folding, flattening
+    /// and normalization), without attempting MBA simplification.
+    pub fn reduce(self, n: u8) -> Self {
+        self.reduce_masked(make_mask(n))
     }
 }
