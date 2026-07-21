@@ -1,8 +1,4 @@
-use std::{
-    cell::Cell,
-    cmp::max,
-    collections::{HashMap, HashSet},
-};
+use std::{cmp::max, collections::HashSet};
 
 use crate::{
     bimap::BiMap,
@@ -14,15 +10,14 @@ use crate::{
 
 use log::debug;
 
+mod lambda;
+mod merge_hidden;
+
+use lambda::{find_lambda_int, find_two_lambdas_int};
+
 /// The largest number of variables a linear MBA may carry into the truth-table
 /// solve. The signature is `2^t` wide, so this bounds one solve at 1M entries.
 pub const MAX_VARS: usize = 20;
-
-thread_local! {
-    /// Prevents a hidden-component equality query from recursively starting
-    /// another query while simplifying its own difference.
-    static HIDDEN_EQUALITY_DEPTH: Cell<usize> = const { Cell::new(0) };
-}
 
 const MAX_SIMPLIFICATION_PASSES: usize = 8;
 
@@ -43,146 +38,6 @@ fn sub_coeff(tt: &mut [u64], coeff: u64, index: usize, sublist: &[usize]) {
     }
 }
 
-fn get_signed(x: u64, n: u8) -> i64 {
-    let value = x & make_mask(n);
-    let shift = 64 - n;
-    ((value << shift) as i64) >> shift // arithmetic shift
-}
-
-fn find_lambda_int(x: &[u64], y: &[u64], a: i64, b: i64, n: u8) -> Option<u64> {
-    let mut valid: Option<(Option<i64>, Option<i64>)> = None;
-
-    for (&xi, &yi) in x.iter().zip(y.iter()) {
-        let xi = get_signed(xi, n);
-        let yi = get_signed(yi, n);
-
-        if yi == 0 {
-            if xi == a || xi == b {
-                continue;
-            } else {
-                return None;
-            }
-        }
-
-        let mut vals = [None, None];
-
-        if (xi.wrapping_sub(a)) % yi == 0 {
-            vals[0] = Some((xi.wrapping_sub(a)) / yi);
-        }
-
-        if (xi.wrapping_sub(b)) % yi == 0 {
-            vals[1] = Some((xi.wrapping_sub(b)) / yi);
-        }
-
-        match valid {
-            None => valid = Some((vals[0], vals[1])),
-            Some((va, vb)) => {
-                let mut new = (None, None);
-                for v in vals.iter().flatten() {
-                    if va == Some(*v) || vb == Some(*v) {
-                        if new.0.is_none() {
-                            new.0 = Some(*v);
-                        } else {
-                            new.1 = Some(*v);
-                        }
-                    }
-                }
-                valid = Some(new);
-            }
-        }
-
-        if let Some((None, None)) = valid {
-            debug!("OVERCONSTRAINED");
-            return None;
-        }
-    }
-
-    if let Some(valid) = valid {
-        let mask = make_mask(n);
-
-        if let Some(v) = valid.0
-            && get_signed(x[0], n).wrapping_sub(v.wrapping_mul(get_signed(y[0], n))) == a
-        {
-            return Some((v as u64) & mask);
-        }
-
-        if let Some(v) = valid.1
-            && get_signed(x[0], n).wrapping_sub(v.wrapping_mul(get_signed(y[0], n))) == a
-        {
-            return Some((v as u64) & mask);
-        }
-
-        None
-    } else {
-        // the vector is null
-        Some(0)
-    }
-}
-
-fn find_two_lambdas_int(
-    x: &[u64],
-    y: &[u64],
-    z: &[u64],
-    a: i64,
-    b: i64,
-    n: u8,
-) -> Option<(u64, u64)> {
-    let signed: Vec<_> = x
-        .iter()
-        .zip(y)
-        .zip(z)
-        .map(|((&x, &y), &z)| (get_signed(x, n), get_signed(y, n), get_signed(z, n)))
-        .collect();
-    let base = signed.iter().position(|&(_, y, z)| y != 0 || z != 0)?;
-    let targets = [a, b];
-
-    for second in 0..signed.len() {
-        let (_, y0, z0) = signed[base];
-        let (_, y1, z1) = signed[second];
-        let determinant = y0 as i128 * z1 as i128 - y1 as i128 * z0 as i128;
-        if determinant == 0 {
-            continue;
-        }
-
-        for target0 in targets {
-            for target1 in targets {
-                let rhs0 = signed[base].0.wrapping_sub(target0) as i128;
-                let rhs1 = signed[second].0.wrapping_sub(target1) as i128;
-                let lambda_y_num = rhs0 * z1 as i128 - rhs1 * z0 as i128;
-                let lambda_z_num = y0 as i128 * rhs1 - y1 as i128 * rhs0;
-                if lambda_y_num % determinant != 0 || lambda_z_num % determinant != 0 {
-                    continue;
-                }
-
-                let lambda_y = lambda_y_num / determinant;
-                let lambda_z = lambda_z_num / determinant;
-                let Ok(lambda_y) = i64::try_from(lambda_y) else {
-                    continue;
-                };
-                let Ok(lambda_z) = i64::try_from(lambda_z) else {
-                    continue;
-                };
-
-                let corrected = |(x, y, z): (i64, i64, i64)| {
-                    x.wrapping_sub(lambda_y.wrapping_mul(y))
-                        .wrapping_sub(lambda_z.wrapping_mul(z))
-                };
-                if corrected(signed[0]) == a
-                    && signed.iter().copied().all(|values| {
-                        let value = corrected(values);
-                        value == a || value == b
-                    })
-                {
-                    let mask = make_mask(n);
-                    return Some(((lambda_y as u64) & mask, (lambda_z as u64) & mask));
-                }
-            }
-        }
-    }
-
-    None
-}
-
 /// Reduces the number of variables present in the MBA
 fn reduce_vars(e: Expr, var_map: &mut BiMap<VarId, VarId>, t: &mut usize) -> Expr {
     match e {
@@ -200,140 +55,6 @@ fn reduce_vars(e: Expr, var_map: &mut BiMap<VarId, VarId>, t: &mut usize) -> Exp
 
         _ => e.map(|e| reduce_vars(e, var_map, t)),
     }
-}
-
-fn passes_quick_zero_check(e: &Expr, mask: u64) -> bool {
-    let variable_count = e
-        .get_vars()
-        .into_iter()
-        .map(|variable| variable.0)
-        .max()
-        .unwrap_or(0)
-        + 1;
-    let mut variables = vec![0u64; variable_count];
-
-    for sample in 0..3u64 {
-        for (index, variable) in variables.iter_mut().enumerate() {
-            *variable = match sample {
-                0 => 0,
-                1 => mask,
-                _ => {
-                    0x9e37_79b9_7f4a_7c15u64
-                        .wrapping_add((index as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9))
-                        & mask
-                }
-            };
-        }
-        if e.eval(&variables).get(mask) != 0 {
-            return false;
-        }
-    }
-    true
-}
-
-fn complete_truth_table(observed: &[Option<bool>]) -> Vec<u8> {
-    let mut tables = vec![0u8];
-    for (input, output) in observed.iter().enumerate() {
-        match output {
-            Some(true) => {
-                for table in &mut tables {
-                    *table |= 1 << input;
-                }
-            }
-            Some(false) => {}
-            None => {
-                let mut with_bit = tables.clone();
-                for table in &mut with_bit {
-                    *table |= 1 << input;
-                }
-                tables.extend(with_bit);
-            }
-        }
-    }
-    tables
-}
-
-fn infer_bitwise_truth_tables(target: &[u64], parents: &[&[u64]], n: u8) -> Vec<u8> {
-    let input_count = 1usize << parents.len();
-    let mut observed = vec![None; input_count];
-    for sample in 0..target.len() {
-        for bit in 0..n {
-            let mut input = 0usize;
-            for (index, parent) in parents.iter().enumerate() {
-                input |= (((parent[sample] >> bit) & 1) as usize) << index;
-            }
-            let output = ((target[sample] >> bit) & 1) != 0;
-            match observed[input] {
-                Some(previous) if previous != output => return Vec::new(),
-                Some(_) => {}
-                None => observed[input] = Some(output),
-            }
-        }
-    }
-    complete_truth_table(&observed)
-}
-
-fn synthesize_unary_bitwise(parent: Expr, truth_table: u8, mask: u64) -> Expr {
-    match truth_table {
-        0b00 => Expr::zero(),
-        0b01 => !parent,
-        0b10 => parent,
-        0b11 => Expr::make_const(mask),
-        _ => unreachable!("a unary truth table has two bits"),
-    }
-}
-
-fn synthesize_binary_bitwise(left: Expr, right: Expr, truth_table: u8, mask: u64) -> Expr {
-    match truth_table {
-        0b0000 => Expr::zero(),
-        0b0001 => !(left | right),
-        0b0010 => left & !right,
-        0b0011 => !right,
-        0b0100 => !left & right,
-        0b0101 => !left,
-        0b0110 => left ^ right,
-        0b0111 => !(left & right),
-        0b1000 => left & right,
-        0b1001 => !(left ^ right),
-        0b1010 => left,
-        0b1011 => left | !right,
-        0b1100 => right,
-        0b1101 => !left | right,
-        0b1110 => left | right,
-        0b1111 => Expr::make_const(mask),
-        _ => unreachable!("a binary truth table has four bits"),
-    }
-}
-
-fn make_signature_samples(expressions: &[Expr], mask: u64) -> Option<Vec<Vec<u64>>> {
-    let mut variable_map = BiMap::<VarId, VarId>::new();
-    let mut variable_count = 0;
-    let reduced: Vec<_> = expressions
-        .iter()
-        .cloned()
-        .map(|expression| reduce_vars(expression, &mut variable_map, &mut variable_count))
-        .collect();
-    if variable_count > 10 {
-        return None;
-    }
-    let mut samples: Vec<_> = reduced
-        .iter()
-        .map(|expression| expression.truth_table(variable_count, mask))
-        .collect();
-    for sample in 0..3u64 {
-        let variables: Vec<_> = (0..variable_count)
-            .map(|variable| {
-                0x9e37_79b9_7f4a_7c15u64
-                    .wrapping_mul(sample + 1)
-                    .wrapping_add(0xbf58_476d_1ce4_e5b9u64.wrapping_mul((variable + 1) as u64))
-                    & mask
-            })
-            .collect();
-        for (values, expression) in samples.iter_mut().zip(&reduced) {
-            values.push(expression.eval(&variables).get(mask));
-        }
-    }
-    Some(samples)
 }
 
 /// Restores the varialbes in the mba
@@ -399,48 +120,6 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         }
     }
 
-    /// Expands hidden variables recursively. This is used when validating a
-    /// relation suggested by signatures: the proof must concern the original
-    /// expressions, not independent placeholder variables.
-    fn expand_hidden_components(&self, e: Expr) -> Expr {
-        match e {
-            Expr::Var(variable) => self
-                .non_linear_components
-                .get_by_left(&variable)
-                .cloned()
-                .map(|definition| self.expand_hidden_components(definition))
-                .unwrap_or(Expr::Var(variable)),
-            _ => e.map(|child| self.expand_hidden_components(child)),
-        }
-    }
-
-    /// Validates a signature-nominated equality using the expanded fixed-width
-    /// expressions. Signatures are only a search heuristic here; this proof is
-    /// the correctness boundary.
-    fn prove_hidden_relation(&mut self, left: Expr, right: Expr) -> bool {
-        let difference = match right {
-            // Use the canonical additive form for a complement relation. It is
-            // algebraically identical to `left - !right`, but exposes the
-            // relation directly to the linear engine.
-            Expr::Not(inner) => left + *inner + Expr::make_const(1),
-            right => left - right,
-        };
-        let difference = self.expand_hidden_components(difference).reduce(self.mask);
-        if !passes_quick_zero_check(&difference, self.mask) {
-            return false;
-        }
-
-        HIDDEN_EQUALITY_DEPTH.with(|depth| {
-            depth.set(depth.get() + 1);
-            let mut solver = MBASolver::new(self.l_cache, &difference, self.n);
-            let is_zero = solver
-                .solve(difference)
-                .map_or(false, |e| e == Expr::zero());
-            depth.set(depth.get() - 1);
-            is_zero
-        })
-    }
-
     /// Solves a non polynomial MBA
     fn solve(&mut self, e: Expr) -> Result<Expr, SolveError> {
         // TODO: Remove this only needs to be done once
@@ -464,159 +143,6 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         } else {
             Ok(p)
         }
-    }
-
-    /// Interns semantically equal nonlinear components under the same hidden
-    /// variable. Syntactically equal components are already shared by `BiMap`;
-    /// this catches independently written expressions whose difference has a
-    /// zero signature.
-    fn merge_equal_hidden_components(&mut self, e: Expr) -> Expr {
-        if HIDDEN_EQUALITY_DEPTH.with(|depth| depth.get() != 0)
-            || self.non_linear_components.len() == 0
-        {
-            return e;
-        }
-
-        let mut components: Vec<_> = self
-            .non_linear_components
-            .iter()
-            .filter(|(_, expression)| !matches!(expression, Expr::Const(_)))
-            .map(|(variable, expression)| (*variable, expression.clone()))
-            .collect();
-        components.sort_unstable_by_key(|(variable, _)| variable.0);
-        if components.is_empty() {
-            return e;
-        }
-
-        let mut aliases = HashMap::<VarId, Expr>::new();
-
-        // Word observations are not proofs, but they cheaply reject impossible
-        // unary and binary bitwise dependencies before exact validation.
-        let mut visible_variables = HashSet::new();
-        for (_, definition) in &components {
-            for variable in definition.get_vars() {
-                if self.non_linear_components.get_by_left(&variable).is_none() {
-                    visible_variables.insert(variable);
-                }
-            }
-        }
-        let mut visible_variables: Vec<_> = visible_variables.into_iter().collect();
-        visible_variables.sort_unstable_by_key(|variable| variable.0);
-
-        let mut observed_expressions = Vec::<(VarId, Expr)>::new();
-        for (variable, definition) in &components {
-            observed_expressions
-                .push((*variable, self.expand_hidden_components(definition.clone())));
-        }
-        let mut observed_atoms = Vec::<(Expr, Expr)>::new();
-        for (variable, definition) in &observed_expressions {
-            observed_atoms.push((Expr::Var(*variable), definition.clone()));
-        }
-        for variable in visible_variables {
-            observed_atoms.push((Expr::Var(variable), Expr::Var(variable)));
-        }
-
-        let sampled_expressions: Vec<_> = observed_expressions
-            .iter()
-            .map(|(_, expression)| expression.clone())
-            .chain(
-                observed_atoms
-                    .iter()
-                    .map(|(_, expression)| expression.clone()),
-            )
-            .collect();
-        let Some(samples) = make_signature_samples(&sampled_expressions, self.mask) else {
-            return e;
-        };
-        let (definition_samples, atom_samples) = samples.split_at(observed_expressions.len());
-
-        'targets: for (target_index, (target_variable, _)) in
-            observed_expressions.iter().enumerate()
-        {
-            let usable_atoms: Vec<_> = observed_atoms
-                .iter()
-                .enumerate()
-                .filter(|(_, (atom, _))| match atom {
-                    // Earlier hidden components cannot introduce an alias
-                    // cycle. Ordinary variables are always safe.
-                    Expr::Var(variable)
-                        if self.non_linear_components.get_by_left(variable).is_some() =>
-                    {
-                        variable.0 < target_variable.0
-                    }
-                    Expr::Var(_) => true,
-                    _ => false,
-                })
-                .collect();
-            let target_samples = &definition_samples[target_index];
-            let mut candidates = Vec::new();
-
-            for table in infer_bitwise_truth_tables(target_samples, &[], self.n) {
-                candidates.push(synthesize_unary_bitwise(
-                    Expr::zero(),
-                    if table == 0 { 0 } else { 3 },
-                    self.mask,
-                ));
-            }
-            for (atom_index, (atom, _)) in &usable_atoms {
-                for table in infer_bitwise_truth_tables(
-                    target_samples,
-                    &[&atom_samples[*atom_index]],
-                    self.n,
-                ) {
-                    candidates.push(synthesize_unary_bitwise(atom.clone(), table, self.mask));
-                }
-            }
-            for left_position in 0..usable_atoms.len() {
-                let (left_index, (left, _)) = usable_atoms[left_position];
-                for (right_index, (right, _)) in &usable_atoms[left_position + 1..] {
-                    for table in infer_bitwise_truth_tables(
-                        target_samples,
-                        &[&atom_samples[left_index], &atom_samples[*right_index]],
-                        self.n,
-                    ) {
-                        candidates.push(synthesize_binary_bitwise(
-                            left.clone(),
-                            right.clone(),
-                            table,
-                            self.mask,
-                        ));
-                    }
-                }
-            }
-
-            candidates.sort_unstable_by_key(Expr::size);
-            candidates.dedup();
-            for candidate in candidates {
-                debug!(
-                    "Word observations nominated hidden relation v{} = {}",
-                    target_variable, candidate
-                );
-                if self.prove_hidden_relation(Expr::Var(*target_variable), candidate.clone()) {
-                    aliases.insert(*target_variable, candidate);
-                    continue 'targets;
-                }
-            }
-        }
-
-        if aliases.is_empty() {
-            return e;
-        }
-
-        fn replace_aliases(e: Expr, aliases: &HashMap<VarId, Expr>) -> Expr {
-            match e {
-                Expr::Var(variable) => {
-                    if let Some(alias) = aliases.get(&variable) {
-                        replace_aliases(alias.clone(), aliases)
-                    } else {
-                        Expr::Var(variable)
-                    }
-                }
-                _ => e.map(|child| replace_aliases(child, aliases)),
-            }
-        }
-
-        replace_aliases(e, &aliases).reduce(self.mask)
     }
 
     /// Calcluates the signature of a linear MBA
@@ -1190,6 +716,7 @@ pub fn simplify_mba_with_cache<C: LinearCache>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn inverse_pct_round_trip_preserves_variable_index() {
@@ -1250,26 +777,5 @@ mod tests {
 
         assert_eq!(calls.get(), MAX_SIMPLIFICATION_PASSES);
         assert_eq!(result, Ok(Expr::Var(0.into())));
-    }
-
-    #[test]
-    fn synthesizes_every_binary_bitwise_truth_table() {
-        let mask = make_mask(8);
-        for table in 0..16u8 {
-            let expression =
-                synthesize_binary_bitwise(Expr::Var(0.into()), Expr::Var(1.into()), table, mask);
-            for assignment in 0..4usize {
-                let variables = [
-                    if assignment & 1 == 0 { 0 } else { mask },
-                    if assignment & 2 == 0 { 0 } else { mask },
-                ];
-                let expected = if table & (1 << assignment) == 0 {
-                    0
-                } else {
-                    mask
-                };
-                assert_eq!(expression.eval(&variables).get(mask), expected);
-            }
-        }
     }
 }
