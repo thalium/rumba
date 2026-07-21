@@ -12,7 +12,8 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use rumba_core::expr::{Expr, VarId};
-use rumba_core::simplify::{LinearCache, LocalCache, MbaCache, simplify_mba_with_cache};
+use rumba_core::cache::{LinearCache, LocalCache, MbaCache};
+use rumba_core::simplify::simplify_mba_with_cache;
 
 const BITS: u8 = 32;
 
