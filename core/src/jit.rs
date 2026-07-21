@@ -168,3 +168,39 @@ pub fn compile(e: &Expr) -> JitFunction {
 
     JitFunction { buffer, ptr }
 }
+
+#[cfg(all(test, feature = "parse"))]
+mod tests {
+    use rand::random_range;
+
+    use crate::parser::parse_expr;
+
+    #[test]
+    fn jit_matches_interpreter() {
+        let functions = [
+            "v0 + v1 + 2",
+            "-1*~v1+2*(v0^v1)-3*~(v0|~v1)-2*(v0&~v1)-1*(v0&v1)",
+            "-1*~(v0&~v1)+7*v1+2*~v0+8*(v0&~v1)-6*(v0&v1)",
+            "1*~(v0&v1)-6*v1+5*~(v0|v1)+6*~(v0|~v1)+6*(v0&~v1)+13*(v0&v1)",
+            "2*v0+1*~(v0&~v0)-1*(v0|~v1)+3*~(v0|v1)-2*(v0&~v1)-2*(v0&v1)",
+            "-7*~(v0^v1)+2*v0+2*~(v0|v1)-5*~(v0|~v1)-7*(v0&~v1)",
+        ];
+
+        for s in functions {
+            let e = parse_expr(s).unwrap();
+            let jit_fn = super::compile(&e);
+
+            let t = 2;
+            let mask = u64::MAX;
+
+            for _ in 0..1000 {
+                let vars: Vec<_> = (0..=t).map(|_| random_range(0..=mask)).collect();
+
+                let v1 = e.eval(&vars, 64);
+                let v2 = jit_fn.eval(&vars) & mask;
+
+                assert_eq!(v1, v2);
+            }
+        }
+    }
+}

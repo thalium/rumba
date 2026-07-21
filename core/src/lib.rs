@@ -13,7 +13,7 @@ pub(crate) mod utils;
 pub(crate) mod varint;
 
 #[cfg(feature = "jit")]
-pub mod jit;
+pub(crate) mod jit;
 pub mod lang;
 
 #[cfg(feature = "parse")]
