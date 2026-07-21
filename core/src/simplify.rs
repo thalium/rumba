@@ -432,6 +432,111 @@ fn passes_quick_zero_check(e: &Expr, mask: u64) -> bool {
     true
 }
 
+fn complete_truth_table(observed: &[Option<bool>]) -> Vec<u8> {
+    let mut tables = vec![0u8];
+    for (input, output) in observed.iter().enumerate() {
+        match output {
+            Some(true) => {
+                for table in &mut tables {
+                    *table |= 1 << input;
+                }
+            }
+            Some(false) => {}
+            None => {
+                let mut with_bit = tables.clone();
+                for table in &mut with_bit {
+                    *table |= 1 << input;
+                }
+                tables.extend(with_bit);
+            }
+        }
+    }
+    tables
+}
+
+fn infer_bitwise_truth_tables(target: &[u64], parents: &[&[u64]], n: u8) -> Vec<u8> {
+    let input_count = 1usize << parents.len();
+    let mut observed = vec![None; input_count];
+    for sample in 0..target.len() {
+        for bit in 0..n {
+            let mut input = 0usize;
+            for (index, parent) in parents.iter().enumerate() {
+                input |= (((parent[sample] >> bit) & 1) as usize) << index;
+            }
+            let output = ((target[sample] >> bit) & 1) != 0;
+            match observed[input] {
+                Some(previous) if previous != output => return Vec::new(),
+                Some(_) => {}
+                None => observed[input] = Some(output),
+            }
+        }
+    }
+    complete_truth_table(&observed)
+}
+
+fn synthesize_unary_bitwise(parent: Expr, truth_table: u8, mask: u64) -> Expr {
+    match truth_table {
+        0b00 => Expr::zero(),
+        0b01 => !parent,
+        0b10 => parent,
+        0b11 => Expr::make_const(mask),
+        _ => unreachable!("a unary truth table has two bits"),
+    }
+}
+
+fn synthesize_binary_bitwise(left: Expr, right: Expr, truth_table: u8, mask: u64) -> Expr {
+    match truth_table {
+        0b0000 => Expr::zero(),
+        0b0001 => !(left | right),
+        0b0010 => left & !right,
+        0b0011 => !right,
+        0b0100 => !left & right,
+        0b0101 => !left,
+        0b0110 => left ^ right,
+        0b0111 => !(left & right),
+        0b1000 => left & right,
+        0b1001 => !(left ^ right),
+        0b1010 => left,
+        0b1011 => left | !right,
+        0b1100 => right,
+        0b1101 => !left | right,
+        0b1110 => left | right,
+        0b1111 => Expr::make_const(mask),
+        _ => unreachable!("a binary truth table has four bits"),
+    }
+}
+
+fn make_signature_samples(expressions: &[Expr], mask: u64) -> Option<Vec<Vec<u64>>> {
+    let mut variable_map = BiMap::<VarId, VarId>::new();
+    let mut variable_count = 0;
+    let reduced: Vec<_> = expressions
+        .iter()
+        .cloned()
+        .map(|expression| reduce_vars(expression, &mut variable_map, &mut variable_count))
+        .collect();
+    if variable_count > 10 {
+        return None;
+    }
+    let mut samples: Vec<_> = reduced
+        .iter()
+        .map(|expression| expression.truth_table(variable_count, mask))
+        .collect();
+    for sample in 0..3u64 {
+        let variables: Vec<_> = (0..variable_count)
+            .map(|variable| {
+                0x9e37_79b9_7f4a_7c15u64
+                    .wrapping_mul(sample + 1)
+                    .wrapping_add(0xbf58_476d_1ce4_e5b9u64.wrapping_mul((variable + 1) as u64))
+                    & mask
+            })
+            .collect();
+        for (values, expression) in samples.iter_mut().zip(&reduced) {
+            values.push(expression.eval(&variables).get(mask));
+        }
+    }
+    Some(samples)
+}
+
 /// Restores the varialbes in the mba
 fn restore_vars(e: Expr, var_map: &BiMap<VarId, VarId>) -> Result<Expr, SolveError> {
     match e {
@@ -586,10 +691,8 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         let mut aliases = HashMap::<VarId, Expr>::new();
 
-        // Signatures of nonlinear expressions are not proofs, but they are a
-        // useful way to nominate small relations worth proving. Search a
-        // bounded grammar: an atom or its complement, and one binary bitwise
-        // operation with an optional complement.
+        // Word observations are not proofs, but they cheaply reject impossible
+        // unary and binary bitwise dependencies before exact validation.
         let mut visible_variables = HashSet::new();
         for (_, definition) in &components {
             for variable in definition.get_vars() {
@@ -601,145 +704,98 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         let mut visible_variables: Vec<_> = visible_variables.into_iter().collect();
         visible_variables.sort_unstable_by_key(|variable| variable.0);
 
-        let mut signature_expressions = Vec::<(VarId, Expr)>::new();
+        let mut observed_expressions = Vec::<(VarId, Expr)>::new();
         for (variable, definition) in &components {
-            signature_expressions
+            observed_expressions
                 .push((*variable, self.expand_hidden_components(definition.clone())));
         }
-        let mut signature_atoms = Vec::<(Expr, Expr)>::new();
-        for (variable, definition) in &signature_expressions {
-            signature_atoms.push((Expr::Var(*variable), definition.clone()));
+        let mut observed_atoms = Vec::<(Expr, Expr)>::new();
+        for (variable, definition) in &observed_expressions {
+            observed_atoms.push((Expr::Var(*variable), definition.clone()));
         }
         for variable in visible_variables {
-            signature_atoms.push((Expr::Var(variable), Expr::Var(variable)));
+            observed_atoms.push((Expr::Var(variable), Expr::Var(variable)));
         }
 
-        let mut variable_map = BiMap::<VarId, VarId>::new();
-        let mut variable_count = 0;
-        let reduced_definitions: Vec<_> = signature_expressions
+        let sampled_expressions: Vec<_> = observed_expressions
             .iter()
-            .map(|(_, definition)| {
-                reduce_vars(definition.clone(), &mut variable_map, &mut variable_count)
-            })
-            .collect();
-        let reduced_atoms: Vec<_> = signature_atoms
-            .iter()
-            .map(|(_, definition)| {
-                reduce_vars(definition.clone(), &mut variable_map, &mut variable_count)
-            })
-            .collect();
-
-        if variable_count <= 10 {
-            let mask = self.mask;
-            let definition_signatures: Vec<_> = reduced_definitions
-                .iter()
-                .map(|definition| definition.truth_table(variable_count, self.mask))
-                .collect();
-            let atom_signatures: Vec<_> = reduced_atoms
-                .iter()
-                .map(|atom| atom.truth_table(variable_count, self.mask))
-                .collect();
-
-            'targets: for (target_index, (target_variable, _)) in
-                signature_expressions.iter().enumerate()
-            {
-                if aliases.contains_key(target_variable) {
-                    continue;
-                }
-                let target_signature = &definition_signatures[target_index];
-                let usable_atoms: Vec<_> = signature_atoms
+            .map(|(_, expression)| expression.clone())
+            .chain(
+                observed_atoms
                     .iter()
-                    .enumerate()
-                    .filter(|(_, (atom, _))| match atom {
-                        // Earlier hidden components cannot introduce an alias
-                        // cycle. Ordinary variables are always safe.
-                        Expr::Var(variable)
-                            if self.non_linear_components.get_by_left(variable).is_some() =>
-                        {
-                            variable.0 < target_variable.0
-                        }
-                        Expr::Var(_) => true,
-                        _ => false,
-                    })
-                    .collect();
+                    .map(|(_, expression)| expression.clone()),
+            )
+            .collect();
+        let Some(samples) = make_signature_samples(&sampled_expressions, self.mask) else {
+            return e;
+        };
+        let (definition_samples, atom_samples) = samples.split_at(observed_expressions.len());
 
-                for (atom_index, (atom, _)) in &usable_atoms {
-                    for complemented in [false, true] {
-                        let matches = target_signature
-                            .iter()
-                            .zip(&atom_signatures[*atom_index])
-                            .all(|(&target, &value)| {
-                                target
-                                    == if complemented {
-                                        (!value) & self.mask
-                                    } else {
-                                        value
-                                    }
-                            });
-                        if !matches {
-                            continue;
-                        }
-                        let candidate = if complemented {
-                            !atom.clone()
-                        } else {
-                            atom.clone()
-                        };
-                        debug!(
-                            "Signature nominated hidden relation v{} = {}",
-                            target_variable, candidate
-                        );
-                        if self
-                            .prove_hidden_relation(Expr::Var(*target_variable), candidate.clone())
-                        {
-                            aliases.insert(*target_variable, candidate);
-                            continue 'targets;
-                        }
+        'targets: for (target_index, (target_variable, _)) in
+            observed_expressions.iter().enumerate()
+        {
+            let usable_atoms: Vec<_> = observed_atoms
+                .iter()
+                .enumerate()
+                .filter(|(_, (atom, _))| match atom {
+                    // Earlier hidden components cannot introduce an alias
+                    // cycle. Ordinary variables are always safe.
+                    Expr::Var(variable)
+                        if self.non_linear_components.get_by_left(variable).is_some() =>
+                    {
+                        variable.0 < target_variable.0
+                    }
+                    Expr::Var(_) => true,
+                    _ => false,
+                })
+                .collect();
+            let target_samples = &definition_samples[target_index];
+            let mut candidates = Vec::new();
+
+            for table in infer_bitwise_truth_tables(target_samples, &[], self.n) {
+                candidates.push(synthesize_unary_bitwise(
+                    Expr::zero(),
+                    if table == 0 { 0 } else { 3 },
+                    self.mask,
+                ));
+            }
+            for (atom_index, (atom, _)) in &usable_atoms {
+                for table in infer_bitwise_truth_tables(
+                    target_samples,
+                    &[&atom_samples[*atom_index]],
+                    self.n,
+                ) {
+                    candidates.push(synthesize_unary_bitwise(atom.clone(), table, self.mask));
+                }
+            }
+            for left_position in 0..usable_atoms.len() {
+                let (left_index, (left, _)) = usable_atoms[left_position];
+                for (right_index, (right, _)) in &usable_atoms[left_position + 1..] {
+                    for table in infer_bitwise_truth_tables(
+                        target_samples,
+                        &[&atom_samples[left_index], &atom_samples[*right_index]],
+                        self.n,
+                    ) {
+                        candidates.push(synthesize_binary_bitwise(
+                            left.clone(),
+                            right.clone(),
+                            table,
+                            self.mask,
+                        ));
                     }
                 }
+            }
 
-                for left_position in 0..usable_atoms.len() {
-                    let (left_index, (left, _)) = usable_atoms[left_position];
-                    for (right_index, (right, _)) in &usable_atoms[left_position + 1..] {
-                        for operation in 0..3 {
-                            let signature_matches = |complemented: bool| {
-                                target_signature
-                                    .iter()
-                                    .zip(&atom_signatures[left_index])
-                                    .zip(&atom_signatures[*right_index])
-                                    .all(|((&target, &left_value), &right_value)| {
-                                        let value = match operation {
-                                            0 => left_value & right_value,
-                                            1 => left_value | right_value,
-                                            _ => left_value ^ right_value,
-                                        };
-                                        target == if complemented { (!value) & mask } else { value }
-                                    })
-                            };
-
-                            for complemented in [false, true] {
-                                if !signature_matches(complemented) {
-                                    continue;
-                                }
-                                let base = match operation {
-                                    0 => left.clone() & right.clone(),
-                                    1 => left.clone() | right.clone(),
-                                    _ => left.clone() ^ right.clone(),
-                                };
-                                let candidate = if complemented { !base } else { base };
-                                debug!(
-                                    "Signature nominated hidden relation v{} = {}",
-                                    target_variable, candidate
-                                );
-                                if self.prove_hidden_relation(
-                                    Expr::Var(*target_variable),
-                                    candidate.clone(),
-                                ) {
-                                    aliases.insert(*target_variable, candidate);
-                                    continue 'targets;
-                                }
-                            }
-                        }
-                    }
+            candidates.sort_unstable_by_key(Expr::size);
+            candidates.dedup();
+            for candidate in candidates {
+                debug!(
+                    "Word observations nominated hidden relation v{} = {}",
+                    target_variable, candidate
+                );
+                if self.prove_hidden_relation(Expr::Var(*target_variable), candidate.clone()) {
+                    aliases.insert(*target_variable, candidate);
+                    continue 'targets;
                 }
             }
         }
@@ -1345,7 +1401,7 @@ mod tests {
         let encoded = solver.poly_to_linear(original.clone(), 2);
 
         assert_eq!(encoded, Expr::Var(5.into()));
-        assert_eq!(solver.linear_to_poly(encoded), u64::MAX * original);
+        assert_eq!(solver.linear_to_poly(encoded), Ok(u64::MAX * original));
     }
 
     #[test]
@@ -1395,5 +1451,26 @@ mod tests {
 
         assert_eq!(calls.get(), MAX_SIMPLIFICATION_PASSES);
         assert_eq!(result, Ok(Expr::Var(0.into())));
+    }
+
+    #[test]
+    fn synthesizes_every_binary_bitwise_truth_table() {
+        let mask = make_mask(8);
+        for table in 0..16u8 {
+            let expression =
+                synthesize_binary_bitwise(Expr::Var(0.into()), Expr::Var(1.into()), table, mask);
+            for assignment in 0..4usize {
+                let variables = [
+                    if assignment & 1 == 0 { 0 } else { mask },
+                    if assignment & 2 == 0 { 0 } else { mask },
+                ];
+                let expected = if table & (1 << assignment) == 0 {
+                    0
+                } else {
+                    mask
+                };
+                assert_eq!(expression.eval(&variables).get(mask), expected);
+            }
+        }
     }
 }
