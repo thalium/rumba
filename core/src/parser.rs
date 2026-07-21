@@ -12,9 +12,9 @@ pub struct RumbaParser;
 
 macro_rules! build_nary {
     ($pair:expr, $name:ident) => {{
-        let mut inner = $pair.into_inner().map(build_expr);
-        let first = inner.next().unwrap();
-        let rest: Vec<_> = inner.collect();
+        let mut inner = $pair.into_inner();
+        let first = build_expr(inner.next().unwrap())?;
+        let rest = inner.map(build_expr).collect::<Result<Vec<_>, _>>()?;
         if rest.is_empty() {
             first
         } else {
@@ -23,20 +23,26 @@ macro_rules! build_nary {
     }};
 }
 
-fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
-    match pair.as_rule() {
+fn build_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr, String> {
+    let expr = match pair.as_rule() {
         Rule::dec_number => {
-            let val = pair.as_str().parse::<u64>().unwrap();
+            let val = pair
+                .as_str()
+                .parse::<u64>()
+                .map_err(|_| format!("integer literal out of range: {}", pair.as_str()))?;
             Expr::Const(val.into())
         }
 
         Rule::hex_number => {
-            let val = u64::from_str_radix(&pair.as_str()[2..], 16).unwrap();
+            let val = u64::from_str_radix(&pair.as_str()[2..], 16)
+                .map_err(|_| format!("hex literal out of range: {}", pair.as_str()))?;
             Expr::Const(val.into())
         }
 
         Rule::var => {
-            let idx = pair.as_str()[1..].parse::<usize>().unwrap();
+            let idx = pair.as_str()[1..]
+                .parse::<usize>()
+                .map_err(|_| format!("variable index out of range: {}", pair.as_str()))?;
             Expr::Var(idx.into())
         }
 
@@ -48,14 +54,14 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
             match first.as_rule() {
                 Rule::unary_op => {
                     let op = first.as_str();
-                    let rhs = build_expr(inner.next().unwrap());
+                    let rhs = build_expr(inner.next().unwrap())?;
                     match op {
                         "~" | "!" => !rhs,
                         "-" => -rhs,
                         _ => unreachable!(),
                     }
                 }
-                Rule::atom => build_expr(first),
+                Rule::atom => build_expr(first)?,
                 _ => unreachable!(),
             }
         }
@@ -68,14 +74,14 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
             let mut inner = pair.into_inner();
 
             // Start with the first term
-            let first = build_expr(inner.next().unwrap());
+            let first = build_expr(inner.next().unwrap())?;
 
             let mut exprs = vec![first];
 
             // Handle remaining (op, mul) pairs
             while let Some(pair) = inner.next() {
                 let op_str = pair.as_str();
-                let rhs = build_expr(inner.next().unwrap());
+                let rhs = build_expr(inner.next().unwrap())?;
 
                 match op_str {
                     "+" => exprs.push(rhs),
@@ -91,15 +97,17 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Expr {
             }
         }
 
-        Rule::number | Rule::expr | Rule::atom => build_expr(pair.into_inner().next().unwrap()),
-        _ => panic!("{:?}", pair),
-    }
+        Rule::number | Rule::expr | Rule::atom => build_expr(pair.into_inner().next().unwrap())?,
+        _ => unreachable!("unexpected rule: {:?}", pair.as_rule()),
+    };
+
+    Ok(expr)
 }
 
 pub fn parse_expr(input: &str) -> Result<Expr, String> {
     let mut pairs = RumbaParser::parse(Rule::expr, input).map_err(|e| e.to_string())?;
 
-    Ok(build_expr(pairs.next().unwrap()))
+    build_expr(pairs.next().unwrap())
 }
 
 pub fn parse_program(input: &str) -> Result<Program, String> {
@@ -120,13 +128,19 @@ pub fn parse_program(input: &str) -> Result<Program, String> {
                     let type_str = inner.next().unwrap().as_str();
                     let var_str = inner.next().unwrap().as_str();
 
-                    let t: u8 = type_str[1..].parse().unwrap();
-                    let var_id: usize = var_str[1..].parse().unwrap();
+                    let t: u8 = type_str[1..]
+                        .parse()
+                        .map_err(|_| format!("type width out of range: {type_str}"))?;
+                    let var_id: usize = var_str[1..]
+                        .parse()
+                        .map_err(|_| format!("variable index out of range: {var_str}"))?;
 
                     let mut unknown_vars = Vec::new();
                     if let Some(vars_pair) = inner.next() {
                         for v in vars_pair.into_inner() {
-                            let v_id: usize = v.as_str()[1..].parse().unwrap();
+                            let v_id: usize = v.as_str()[1..]
+                                .parse()
+                                .map_err(|_| format!("variable index out of range: {}", v.as_str()))?;
                             unknown_vars.push(v_id.into());
                         }
                     }
@@ -139,11 +153,15 @@ pub fn parse_program(input: &str) -> Result<Program, String> {
                     let type_str = inner.next().unwrap().as_str();
                     let var_str = inner.next().unwrap().as_str();
 
-                    let t: u8 = type_str[1..].parse().unwrap();
-                    let var_id: usize = var_str[1..].parse().unwrap();
+                    let t: u8 = type_str[1..]
+                        .parse()
+                        .map_err(|_| format!("type width out of range: {type_str}"))?;
+                    let var_id: usize = var_str[1..]
+                        .parse()
+                        .map_err(|_| format!("variable index out of range: {var_str}"))?;
 
                     let expr_pair = inner.next().unwrap();
-                    let expr = build_expr(expr_pair);
+                    let expr = build_expr(expr_pair)?;
 
                     (t, var_id.into(), InsnKind::Assign(expr))
                 }
@@ -236,5 +254,12 @@ u8 v5 = unknown(v4)
 
         program.simplify().expect("Error during simplification");
         println!("{}", program);
+    }
+
+    #[test]
+    fn oversized_literal_errors_instead_of_panicking() {
+        // u64::MAX + 1 matches the grammar but does not fit in u64.
+        let err = parse_expr("18446744073709551616").unwrap_err();
+        assert!(err.contains("out of range"), "unexpected error: {err}");
     }
 }

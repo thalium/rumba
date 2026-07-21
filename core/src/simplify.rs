@@ -418,15 +418,13 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         let mut sub_vars = vec![];
 
         for v in e.get_vars() {
-            if self
-                .non_linear_components
-                .get_by_left(&v)
-                .is_some_and(|definition| self.is_linear(definition))
+            if let Some(definition) = self.non_linear_components.get_by_left(&v)
+                && self.is_linear(definition)
             {
-                sub_vars.push(v);
+                sub_vars.push((v, definition));
             }
         }
-        sub_vars.sort_unstable_by_key(|variable| variable.0);
+        sub_vars.sort_unstable_by_key(|(variable, _)| variable.0);
 
         if sub_vars.is_empty() || sub_vars.len() > 2 {
             return None;
@@ -435,8 +433,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         debug!("While checking if {} is linear", e);
         debug!("Proceding with advanced variable substitution");
         let mut zero_expressions = Vec::with_capacity(sub_vars.len());
-        for sub_var in sub_vars {
-            let definition = self.non_linear_components.get_by_left(&sub_var).unwrap();
+        for (sub_var, definition) in sub_vars {
             debug!("Found substitution v{} = {}", sub_var, definition);
             let zero = Expr::Var(sub_var) - definition.clone();
             debug!("Using zero expression {}", zero);
