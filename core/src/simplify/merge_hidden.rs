@@ -12,8 +12,8 @@ use std::{
 };
 
 use crate::{
-    bimap::BiMap,
-    cache::LinearCache,
+    utils::bimap::BiMap,
+    utils::cache::LinearCache,
     expr::{Expr, VarId},
 };
 

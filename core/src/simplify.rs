@@ -1,9 +1,9 @@
 use std::{cmp::max, collections::HashSet};
 
 use crate::{
-    bimap::BiMap,
-    cache::{LinearCache, LocalCache},
-    error::SolveError,
+    utils::bimap::BiMap,
+    utils::cache::{LinearCache, LocalCache},
+    utils::error::SolveError,
     expr::{Expr, VarId},
     varint::{VarInt, make_mask},
 };

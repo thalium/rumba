@@ -1,6 +1,4 @@
-mod bimap;
-pub mod cache;
-pub mod error;
+pub mod utils;
 pub mod expr;
 pub mod patterns;
 pub mod reduce;
