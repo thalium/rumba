@@ -1631,6 +1631,99 @@ fn make_p7e_observation_samples(
     }
 }
 
+/// One binary P7e candidate inferred from deterministic word-level
+/// observations. Observations only reject tables; `pct_proved` is set solely by
+/// the ordinary exact simplifier, with P7e absent from that proof path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryBitwiseDependencyCandidate {
+    pub truth_table: u8,
+    pub expression: Expr,
+    pub pct_proved: bool,
+}
+
+/// Infer the surviving binary truth tables for arbitrary word-level parents
+/// without attempting any proof. This diagnostic-only entry point lets a
+/// caller exercise an independent certificate domain without invoking PCT.
+pub fn discover_binary_bitwise_dependency_candidates(
+    target: &Expr,
+    parent_a: &Expr,
+    parent_b: &Expr,
+    bit_width: u8,
+) -> Vec<BinaryBitwiseDependencyCandidate> {
+    const SAMPLE_COUNT: usize = 12;
+    let mask = make_mask(bit_width);
+    let max_var = [target, parent_a, parent_b]
+        .into_iter()
+        .flat_map(Expr::get_vars)
+        .map(|atom| atom.0)
+        .max()
+        .unwrap_or(0);
+    let mut observed = [None; 4];
+    for sample in 0..SAMPLE_COUNT {
+        let values = deterministic_root_values(max_var, sample, mask);
+        let target_word = target.eval(&values).get(mask);
+        let parent_a_word = parent_a.eval(&values).get(mask);
+        let parent_b_word = parent_b.eval(&values).get(mask);
+        for bit in 0..bit_width {
+            let a = ((parent_a_word >> bit) & 1) as usize;
+            let b = ((parent_b_word >> bit) & 1) as usize;
+            let input = a | (b << 1);
+            let output = ((target_word >> bit) & 1) != 0;
+            match observed[input] {
+                Some(previous) if previous != output => return Vec::new(),
+                Some(_) => {}
+                None => observed[input] = Some(output),
+            }
+        }
+    }
+
+    let mut candidates: Vec<_> = complete_observed_truth_table(&observed)
+        .into_iter()
+        .map(|truth_table| {
+            let expression = synthesize_binary_bitwise_function(
+                parent_a.clone(),
+                parent_b.clone(),
+                truth_table,
+                mask,
+            );
+            BinaryBitwiseDependencyCandidate {
+                truth_table,
+                expression,
+                pct_proved: false,
+            }
+        })
+        .collect();
+    candidates.sort_by_key(|candidate| {
+        (
+            candidate.expression.size(),
+            expression_depth(&candidate.expression),
+            candidate.truth_table,
+        )
+    });
+    candidates
+}
+
+/// Infer the surviving binary truth tables for arbitrary word-level parents,
+/// then attempt the existing exact PCT proof for each survivor.
+pub fn enumerate_binary_bitwise_dependency_candidates(
+    target: &Expr,
+    parent_a: &Expr,
+    parent_b: &Expr,
+    bit_width: u8,
+) -> Vec<BinaryBitwiseDependencyCandidate> {
+    let mask = make_mask(bit_width);
+    discover_binary_bitwise_dependency_candidates(target, parent_a, parent_b, bit_width)
+        .into_iter()
+        .map(|mut candidate| {
+            candidate.pct_proved = simplify_mba(
+                (target.clone() - candidate.expression.clone()).reduce(mask),
+                bit_width,
+            ) == Ok(Expr::zero());
+            candidate
+        })
+        .collect()
+}
+
 fn expand_p7e_expression(
     expression: Expr,
     atoms: &HashMap<VarId, &HiddenAtomTrace>,
