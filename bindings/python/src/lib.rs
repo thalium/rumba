@@ -94,10 +94,10 @@ impl Expr {
     }
 
     /// Attempts to solve this expression, treating it as a non polynomial MBA
-    fn solve(&mut self, n: u8) -> Self {
-        Self {
-            inner: simplify_mba(self.inner.clone(), n),
-        }
+    fn solve(&mut self, n: u8) -> PyResult<Self> {
+        simplify_mba(self.inner.clone(), n)
+            .map(|inner| Self { inner })
+            .map_err(|error| exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// The number of nodes in this expression
