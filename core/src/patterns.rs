@@ -11,6 +11,8 @@
 //! constants are absorbed by the leading `reduce` of the next simplification
 //! iteration.
 
+use std::collections::BTreeMap;
+
 use crate::expr::Expr;
 use crate::varint::VarInt;
 
@@ -80,6 +82,98 @@ fn split(e: &Expr, mask: u64) -> (u64, Expr) {
     (f, core)
 }
 
+/// `coefficient * e`, reduced into the same canonical form seen by patterns.
+fn scaled(e: &Expr, coefficient: u64, mask: u64) -> Expr {
+    Expr::scale(VarInt::from(coefficient), e.clone()).reduce(mask)
+}
+
+/// The canonical arithmetic negation of `e`.
+fn negated(e: &Expr, mask: u64) -> Expr {
+    scaled(e, mask, mask)
+}
+
+/// Converts a reduced expression into its top-level additive coefficient map.
+/// This lets us compare distributed forms such as `2*x - 2*y` and `x - y`.
+fn additive_coefficients(e: &Expr, mask: u64) -> BTreeMap<Expr, u64> {
+    let mut result = BTreeMap::new();
+    let terms: &[Expr] = match e {
+        Expr::Add(terms) => terms,
+        _ => std::slice::from_ref(e),
+    };
+    for term in terms {
+        let (coefficient, core) = match term {
+            Expr::Scale(c, core) => (c.get(mask), core.as_ref().clone()),
+            Expr::Const(c) => (c.get(mask), Expr::make_const(1)),
+            _ => (1, term.clone()),
+        };
+        let entry = result.entry(core).or_insert(0u64);
+        *entry = entry.wrapping_add(coefficient) & mask;
+    }
+    result.retain(|_, coefficient| *coefficient != 0);
+    result
+}
+
+/// If `candidate == coefficient * base` modulo the current bit width, returns
+/// that coefficient. At least one coefficient of `base` must be odd; the old
+/// factor/core matcher remains as a fallback for uniformly even expressions.
+fn scale_relation(candidate: &Expr, base: &Expr, mask: u64) -> Option<u64> {
+    let arithmetic = |e: &Expr| match e {
+        Expr::Not(inner) => (-inner.as_ref().clone() - Expr::make_const(1)).reduce(mask),
+        _ => e.clone(),
+    };
+    let candidate = additive_coefficients(&arithmetic(candidate), mask);
+    let base = additive_coefficients(&arithmetic(base), mask);
+    if candidate.keys().ne(base.keys()) {
+        return None;
+    }
+    let (first, &pivot) = base
+        .iter()
+        .find(|(_, coefficient)| **coefficient & 1 == 1)?;
+
+    // Newton iteration computes the inverse of an odd integer modulo 2^64;
+    // masking below adapts it to the active bit width.
+    let mut inverse = pivot;
+    for _ in 0..6 {
+        inverse = inverse.wrapping_mul(2u64.wrapping_sub(pivot.wrapping_mul(inverse)));
+    }
+    let coefficient = candidate[first].wrapping_mul(inverse) & mask;
+    base.iter()
+        .all(|(core, value)| candidate[core] == value.wrapping_mul(coefficient) & mask)
+        .then_some(coefficient)
+}
+
+fn are_negations(a: &Expr, b: &Expr, mask: u64) -> bool {
+    let arithmetic = |e: &Expr| match e {
+        Expr::Not(inner) => (-inner.as_ref().clone() - Expr::make_const(1)).reduce(mask),
+        _ => e.clone(),
+    };
+    let a = arithmetic(a);
+    let b = arithmetic(b);
+    negated(&a, mask) == b
+        || negated(&b, mask) == a
+        || scale_relation(&a, &b, mask) == Some(mask)
+        || scale_relation(&b, &a, mask) == Some(mask)
+}
+
+fn is_low_bit_of(candidate: &Expr, base: &Expr, mask: u64) -> bool {
+    let Expr::And(children) = candidate else {
+        return false;
+    };
+    children.len() == 2
+        && ((scale_relation(&children[0], base, mask) == Some(1)
+            && are_negations(&children[0], &children[1], mask))
+            || (scale_relation(&children[1], base, mask) == Some(1)
+                && are_negations(&children[0], &children[1], mask)))
+}
+
+fn rebuild_and(mut children: Vec<Expr>) -> Expr {
+    match children.len() {
+        0 => Expr::make_const(u64::MAX),
+        1 => children.pop().unwrap(),
+        _ => Expr::And(children),
+    }
+}
+
 /// Recognizes the reduced form of a low-bit mask `m·X - 1`.
 ///
 /// After `reduce`, `m·X - 1` is an `Add` of a `-1` constant (`mask`, i.e. all
@@ -106,6 +200,29 @@ fn as_low_bit_mask(e: &Expr, mask: u64) -> Option<(u64, Expr)> {
         _ => Expr::Add(rest),
     };
     Some(split(&m_x, mask))
+}
+
+/// Returns the non-constant part of a reduced `m*X - 1` mask.
+fn low_bit_mask_multiple(e: &Expr, mask: u64) -> Option<Expr> {
+    let Expr::Add(terms) = e else {
+        return None;
+    };
+    let mut neg_one = false;
+    let mut rest = Vec::new();
+    for term in terms {
+        match term {
+            Expr::Const(c) if c.get(mask) == mask => neg_one = true,
+            _ => rest.push(term.clone()),
+        }
+    }
+    if !neg_one || rest.is_empty() {
+        return None;
+    }
+    Some(if rest.len() == 1 {
+        rest.pop().unwrap()
+    } else {
+        Expr::Add(rest)
+    })
 }
 
 /// `X & (-X) & (m·X) = 0` for any expression `X` and any even `m`.
@@ -178,6 +295,26 @@ impl Pattern for LowBitAnnihilator {
             }
         }
 
+        // The factor/core path above cannot factor an affine expression whose
+        // reduced terms have mixed coefficients, e.g. X = x - y. Compare the
+        // complete canonical additive forms as a fallback.
+        for (i, x) in children.iter().enumerate() {
+            if !children
+                .iter()
+                .enumerate()
+                .any(|(j, other)| i != j && are_negations(x, other, mask))
+            {
+                continue;
+            }
+            if children.iter().enumerate().any(|(j, other)| {
+                i != j
+                    && scale_relation(other, x, mask)
+                        .is_some_and(|coefficient| coefficient.trailing_zeros() > 0)
+            }) {
+                return Some(Expr::zero());
+            }
+        }
+
         None
     }
 }
@@ -229,7 +366,23 @@ impl Pattern for LowBitRedundantMask {
                         .any(|(b, b_core)| *b_core == core && *b == a.wrapping_neg() & mask)
             });
             if !isolated {
-                continue;
+                // As above, compare full canonical affine forms when a common
+                // scalar cannot be factored syntactically.
+                let Some(multiple) = low_bit_mask_multiple(cand, mask) else {
+                    continue;
+                };
+                let affine_isolated = children.iter().enumerate().any(|(i, x)| {
+                    i != idx
+                        && scale_relation(&multiple, x, mask)
+                            .is_some_and(|coefficient| coefficient.trailing_zeros() > 0)
+                        && children
+                            .iter()
+                            .enumerate()
+                            .any(|(j, other)| j != idx && j != i && are_negations(x, other, mask))
+                });
+                if !affine_isolated {
+                    continue;
+                }
             }
 
             // Drop the redundant conjunct; the rest is already canonical.
@@ -242,6 +395,148 @@ impl Pattern for LowBitRedundantMask {
             });
         }
 
+        None
+    }
+}
+
+/// Drops `X` from `X & (X - (X & -X))`: subtracting the low bit only clears a
+/// bit already present in `X`, so the remainder is a bitwise subset of `X`.
+/// Also recognizes the dual reconstruction
+/// `X & (-1 - X + (X & -X)) = X & -X`.
+struct LowBitRemainder;
+
+impl Pattern for LowBitRemainder {
+    fn tags(&self) -> &'static [Tag] {
+        &[Tag::And]
+    }
+
+    fn apply(&self, e: &Expr, mask: u64) -> Option<Expr> {
+        let Expr::And(children) = e else {
+            return None;
+        };
+
+        for (x_idx, x) in children.iter().enumerate() {
+            for (other_idx, other) in children.iter().enumerate() {
+                if x_idx == other_idx {
+                    continue;
+                }
+                let Expr::Add(terms) = other else {
+                    continue;
+                };
+                for low_bit_term in terms {
+                    let (_, low_bit) = split(low_bit_term, mask);
+                    if !is_low_bit_of(&low_bit, x, mask) {
+                        continue;
+                    }
+
+                    let remainder = (x.clone() - low_bit.clone()).reduce(mask);
+                    if *other == remainder {
+                        let mut kept = children.clone();
+                        kept.remove(x_idx);
+                        return Some(rebuild_and(kept));
+                    }
+
+                    let reconstruction =
+                        (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce(mask);
+                    if *other == reconstruction {
+                        let mut kept: Vec<_> = children
+                            .iter()
+                            .enumerate()
+                            .filter(|(idx, _)| *idx != x_idx && *idx != other_idx)
+                            .map(|(_, child)| child.clone())
+                            .collect();
+                        kept.push(low_bit.clone());
+                        return Some(rebuild_and(kept).reduce(mask));
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// If `A = X + 1`, every set bit of `A & (m*A)` for even `m` is above A's
+/// lowest set bit and is therefore also present in `A - 1 = X`:
+///
+/// `X & (X + 1) & (m * (X + 1)) = (X + 1) & (m * (X + 1))`.
+struct SuccessorBoundaryAbsorption;
+
+impl Pattern for SuccessorBoundaryAbsorption {
+    fn tags(&self) -> &'static [Tag] {
+        &[Tag::And]
+    }
+
+    fn apply(&self, e: &Expr, mask: u64) -> Option<Expr> {
+        let Expr::And(children) = e else {
+            return None;
+        };
+        if children.len() < 3 {
+            return None;
+        }
+
+        for (predecessor_idx, predecessor) in children.iter().enumerate() {
+            let successor = (predecessor.clone() + Expr::make_const(1)).reduce(mask);
+            let Some(successor_idx) = children
+                .iter()
+                .enumerate()
+                .find(|(idx, child)| *idx != predecessor_idx && **child == successor)
+                .map(|(idx, _)| idx)
+            else {
+                continue;
+            };
+            if children.iter().enumerate().any(|(idx, child)| {
+                idx != predecessor_idx
+                    && idx != successor_idx
+                    && scale_relation(child, &successor, mask)
+                        .is_some_and(|coefficient| coefficient.trailing_zeros() > 0)
+            }) {
+                let mut kept = children.clone();
+                kept.remove(predecessor_idx);
+                return Some(rebuild_and(kept));
+            }
+        }
+
+        // If `X` is itself a conjunction, reduction flattens it into the
+        // parent and there is no direct predecessor child. Restrict this more
+        // expensive path to successors for which `A - 1` is exactly an And.
+        for (successor_idx, successor) in children.iter().enumerate() {
+            let predecessor = (successor.clone() - Expr::make_const(1)).reduce(mask);
+            let Expr::And(factors) = predecessor else {
+                continue;
+            };
+            let mut used = vec![false; children.len()];
+            used[successor_idx] = true;
+            let mut redundant_indices = Vec::with_capacity(factors.len());
+            for factor in &factors {
+                let Some((idx, _)) = children
+                    .iter()
+                    .enumerate()
+                    .find(|(idx, child)| !used[*idx] && *child == factor)
+                else {
+                    redundant_indices.clear();
+                    break;
+                };
+                used[idx] = true;
+                redundant_indices.push(idx);
+            }
+            if redundant_indices.len() != factors.len() {
+                continue;
+            }
+            if !children.iter().enumerate().any(|(idx, child)| {
+                !used[idx]
+                    && scale_relation(child, successor, mask)
+                        .is_some_and(|coefficient| coefficient.trailing_zeros() > 0)
+            }) {
+                continue;
+            }
+            let kept: Vec<_> = children
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| !redundant_indices.contains(idx))
+                .map(|(_, child)| child.clone())
+                .collect();
+            return Some(rebuild_and(kept));
+        }
         None
     }
 }
@@ -265,7 +560,7 @@ impl LowBitMaskSplit {
     /// Splits `X & (m·X - 1)`: returns `(a, a_t, b, C)` for a term `a·(t & M)`
     /// where `t = a_t·C`, `M = m·X - 1` carries even multiple `b` over the same
     /// core `C`, and `b` is an even multiple of `a_t`.
-    fn split_masked(term: &Expr, mask: u64) -> Option<(u64, u64, u64, Expr)> {
+    fn split_masked(term: &Expr, mask: u64) -> Option<(u64, Expr, Expr)> {
         let (a, core) = split(term, mask);
         let Expr::And(conj) = core else {
             return None;
@@ -274,15 +569,23 @@ impl LowBitMaskSplit {
             return None;
         }
         // One conjunct is the mask `M`, the other is the core term `t`.
+        // Besides `m*X-1`, accept the adjacent split at `m*X` itself; for
+        // even m both `(X & mX) + (-X & mX) = mX` and the `mX-1` form hold.
         for (i, j) in [(0, 1), (1, 0)] {
-            let Some((b, m_core)) = as_low_bit_mask(&conj[i], mask) else {
-                continue;
-            };
-            let (a_t, t_core) = split(&conj[j], mask);
-            if t_core != m_core || b.trailing_zeros() <= a_t.trailing_zeros() {
+            let multiple = low_bit_mask_multiple(&conj[i], mask).unwrap_or_else(|| conj[i].clone());
+            let t = conj[j].clone();
+            let is_even_multiple = scale_relation(&multiple, &t, mask)
+                .is_some_and(|coefficient| coefficient.trailing_zeros() > 0)
+                || {
+                    let (multiple_factor, multiple_core) = split(&multiple, mask);
+                    let (t_factor, t_core) = split(&t, mask);
+                    multiple_core == t_core
+                        && multiple_factor.trailing_zeros() > t_factor.trailing_zeros()
+                };
+            if !is_even_multiple {
                 continue;
             }
-            return Some((a, a_t, b, m_core));
+            return Some((a, t, multiple));
         }
         None
     }
@@ -302,26 +605,21 @@ impl Pattern for LowBitMaskSplit {
         }
 
         for i in 0..terms.len() {
-            let Some((a1, a_t1, b1, core1)) = Self::split_masked(&terms[i], mask) else {
+            let Some((a1, t1, multiple1)) = Self::split_masked(&terms[i], mask) else {
                 continue;
             };
             for j in (i + 1)..terms.len() {
-                let Some((a2, a_t2, b2, core2)) = Self::split_masked(&terms[j], mask) else {
+                let Some((a2, t2, multiple2)) = Self::split_masked(&terms[j], mask) else {
                     continue;
                 };
                 // Same outer scale `a`, same mask `M` (core `C` and multiple `b`),
                 // and the two core terms negate each other (`a_t` and `-a_t`).
-                if a1 != a2
-                    || b1 != b2
-                    || core1 != core2
-                    || a_t1 != a_t2.wrapping_neg() & mask
-                {
+                if a1 != a2 || multiple1 != multiple2 || !are_negations(&t1, &t2, mask) {
                     continue;
                 }
 
                 // Replace the pair with the single term `a·m·X = a·b·C`.
-                let coeff = (VarInt::from(a1) * VarInt::from(b1)).mask(mask);
-                let collapsed = Expr::scale(coeff, core1);
+                let collapsed = scaled(&multiple1, a1, mask);
 
                 let kept: Vec<Expr> = terms
                     .iter()
@@ -446,6 +744,8 @@ impl Pattern for NestedBitwiseIdentity {
 static PATTERNS: &[&dyn Pattern] = &[
     &LowBitAnnihilator,
     &LowBitRedundantMask,
+    &LowBitRemainder,
+    &SuccessorBoundaryAbsorption,
     &LowBitMaskSplit,
     &NestedBitwiseIdentity,
 ];
@@ -508,6 +808,14 @@ mod tests {
 
         let x = var(0) & var(1);
         assert_eq!(annihilate(x, 4), Expr::zero());
+    }
+
+    #[test]
+    fn annihilator_fires_on_affine_core() {
+        let x = var(0) - var(1);
+        for m in [2u64, 4, 6, 10] {
+            assert_eq!(annihilate(x.clone(), m), Expr::zero(), "m={m}");
+        }
     }
 
     #[test]
@@ -581,11 +889,22 @@ mod tests {
     }
 
     #[test]
+    fn redundant_mask_fires_on_affine_core() {
+        let mask = make_mask(N);
+        let x = var(0) - var(1);
+        let expected = (x.clone() & (-x.clone())).reduce(mask);
+        for m in [2u64, 4, 6, 10] {
+            assert_eq!(redundant_mask(x.clone(), m), expected, "m={m}");
+        }
+    }
+
+    #[test]
     fn mask_fires_within_larger_and() {
         let mask = make_mask(N);
         let x = var(0);
-        let e = (var(1) & x.clone() & (-x.clone()) & (6u64 * x.clone() - Expr::make_const(1)) & var(2))
-            .reduce(mask);
+        let e =
+            (var(1) & x.clone() & (-x.clone()) & (6u64 * x.clone() - Expr::make_const(1)) & var(2))
+                .reduce(mask);
         let expected = (var(1) & x.clone() & (-x.clone()) & var(2)).reduce(mask);
         assert_eq!(apply_patterns(e, mask), expected);
     }
@@ -622,6 +941,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn low_bit_remainder_is_absorbed_by_base() {
+        let mask = make_mask(N);
+        for x in [var(0), var(0) - var(1), var(0) + 2u64 * var(1)] {
+            let low_bit = (x.clone() & (-x.clone())).reduce(mask);
+            let remainder = (x.clone() - low_bit).reduce(mask);
+            let before = (x & remainder.clone()).reduce(mask);
+            assert_eq!(apply_patterns(before, mask), remainder);
+        }
+    }
+
+    #[test]
+    fn low_bit_is_reconstructed_from_complementary_mask() {
+        let mask = make_mask(N);
+        for x in [var(0), var(0) - var(1), var(0) + 2u64 * var(1)] {
+            let low_bit = (x.clone() & (-x.clone())).reduce(mask);
+            let complementary = (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce(mask);
+            let before = (x & complementary).reduce(mask);
+            assert_eq!(apply_patterns(before, mask), low_bit);
+        }
+    }
+
+    #[test]
+    fn successor_boundary_is_absorbed_by_predecessor() {
+        let mask = make_mask(N);
+        for x in [
+            var(0),
+            var(0) - var(1),
+            var(0) & var(1),
+            var(0) + (var(0) & var(1)),
+        ] {
+            let successor = (x.clone() + Expr::make_const(1)).reduce(mask);
+            for multiple in [2u64, 4, 6, mask - 1] {
+                let boundary = (successor.clone() & multiple * successor.clone()).reduce(mask);
+                let before = (x.clone() & boundary.clone()).reduce(mask);
+                assert_eq!(
+                    apply_patterns(before, mask),
+                    boundary,
+                    "multiple={multiple}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn successor_boundary_keeps_odd_multiple() {
+        let mask = make_mask(N);
+        let x = var(0) - var(1);
+        let successor = (x.clone() + Expr::make_const(1)).reduce(mask);
+        let before = (x & successor.clone() & 3u64 * successor).reduce(mask);
+        assert_eq!(apply_patterns(before.clone(), mask), before);
+    }
+
     /// `a·(X & M) + a·((-X) & M)` with `M = m·X - 1`, reduced and rewritten.
     fn mask_split(x: Expr, a: u64, m: u64) -> Expr {
         let mask = make_mask(N);
@@ -637,6 +1009,19 @@ mod tests {
             for m in [2u64, 4, 6, 8, 10] {
                 let expected = (a * (m * var(0))).reduce(mask);
                 assert_eq!(mask_split(var(0), a, m), expected, "a={a} m={m}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_at_even_multiple_collapses_to_multiple() {
+        let mask = make_mask(N);
+        for x in [var(0), var(0) - var(1), var(0) + Expr::make_const(1)] {
+            for multiple in [2u64, 4, 6, 10] {
+                let boundary = (multiple * x.clone()).reduce(mask);
+                let before = ((x.clone() & boundary.clone()) + ((-x.clone()) & boundary.clone()))
+                    .reduce(mask);
+                assert_eq!(apply_patterns(before, mask), boundary);
             }
         }
     }
@@ -668,11 +1053,20 @@ mod tests {
     }
 
     #[test]
+    fn split_fires_on_affine_core() {
+        let mask = make_mask(N);
+        let x = var(0) - var(1);
+        let expected = (3u64 * (6u64 * x.clone())).reduce(mask);
+        assert_eq!(mask_split(x, 3, 6), expected);
+    }
+
+    #[test]
     fn split_fires_within_larger_add() {
         let mask = make_mask(N);
         let x = var(0);
         let mm = 6u64 * x.clone() - Expr::make_const(1);
-        let e = (var(1) + 3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x.clone()) & mm)).reduce(mask);
+        let e =
+            (var(1) + 3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x.clone()) & mm)).reduce(mask);
         let expected = (var(1) + 3u64 * (6u64 * x)).reduce(mask);
         assert_eq!(apply_patterns(e, mask), expected);
     }
