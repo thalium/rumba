@@ -54,6 +54,7 @@ pub mod expr;
 pub mod simplify;
 
 pub(crate) mod patterns;
+pub(crate) mod prettify;
 pub(crate) mod reduce;
 pub(crate) mod utils;
 pub(crate) mod varint;

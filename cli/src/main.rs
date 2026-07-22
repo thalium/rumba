@@ -4,6 +4,10 @@ use rumba_core::{
     simplify::{SimplifyOptions, simplify_mba_with},
 };
 
+mod names;
+
+use names::Names;
+
 fn main() {
     env_logger::init();
 
@@ -13,7 +17,7 @@ fn main() {
         .about("Simplifies polynomial MBA expressions")
         .arg(
             Arg::new("expression")
-                .help("Polynomial MBA over the variables v0, v1, ...")
+                .help("Polynomial MBA over arbitrary variable names, e.g. 'rax | rbx'")
                 .required(true),
         )
         .arg(
@@ -52,9 +56,13 @@ fn main() {
 
     let hex = matches.get_flag("hex");
 
+    // Accept any C-style identifier by interning names to the `v<index>` the
+    // grammar knows, then spelling them back out on every line we print.
+    let (expr, names) = Names::rewrite(&expr);
+
     match parse_expr(&expr) {
         Ok(e) => {
-            println!("Simplify {}", e.repr(bits, hex, false));
+            println!("Simplify {}", names.restore(&e.repr(bits, hex, false)));
             let sol = match simplify_mba_with(e.clone(), bits, options) {
                 Ok(solution) => solution,
                 Err(error) => {
@@ -62,14 +70,14 @@ fn main() {
                     return;
                 }
             };
-            println!("{}", sol.repr(bits, hex, false));
+            println!("{}", names.restore(&sol.repr(bits, hex, false)));
 
             if matches.get_flag("test") {
                 if let Err((vars, got, want)) = e.sem_equal(&sol, bits, 1000) {
                     let assignment = vars
                         .iter()
                         .enumerate()
-                        .map(|(i, v)| format!("v{i}={v}"))
+                        .map(|(i, v)| format!("{}={v}", names.get(i)))
                         .collect::<Vec<_>>()
                         .join(" ");
                     eprintln!("counterexample: {assignment} input={got} simplified={want}")

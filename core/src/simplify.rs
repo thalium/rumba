@@ -2,6 +2,7 @@ use std::cmp::max;
 
 use crate::{
     expr::{Expr, VarId},
+    prettify::prettify,
     utils::bimap::BiMap,
     utils::cache::{LinearCache, LocalCache, MbaCache},
     varint::make_mask,
@@ -767,7 +768,11 @@ fn simplify_mba_with_cache<C: LinearCache>(
 ) -> Result<Expr, SolveError> {
     let mask = make_mask(n);
     let e = e.reduce_masked(mask);
-    simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n, options))
+    let e = simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n, options))?;
+
+    // The only place prettify may run: on the way out, after the fixed point has
+    // settled. See the module docs for why it must stay out of the loop.
+    Ok(prettify(e, n))
 }
 
 #[cfg(test)]
