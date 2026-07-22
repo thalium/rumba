@@ -8,7 +8,7 @@ use rumba_core::parser::parse_expr;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(start)]
-pub fn main() {
+pub fn start() {
     console_log::init().unwrap();
     panic::set_hook(Box::new(console_error_panic_hook::hook));
 }

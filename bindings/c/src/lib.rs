@@ -747,3 +747,50 @@ pub extern "C" fn get_err_str() -> *const c_char {
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds `x + 3` from the constructors and evaluates it.
+    #[test]
+    fn builds_and_evaluates_expression() {
+        let x = rumba_make_var(0);
+        let three = rumba_make_const(3);
+        // rumba_expr_add consumes both operands.
+        let sum = unsafe { rumba_expr_add(x, three) };
+
+        let vars = [10u64];
+        let got = unsafe { rumba_expr_eval(sum, 64, vars.as_ptr(), vars.len()) };
+        assert_eq!(got, 13);
+
+        // A textual representation is produced and owned by the caller.
+        let mut len = 0usize;
+        let repr = unsafe { rumba_expr_repr(sum, 64, &mut len, 0) };
+        assert!(!repr.is_null());
+        let _ = unsafe { CString::from_raw(repr) };
+
+        unsafe { rumba_expr_free(sum) };
+    }
+
+    /// Parses an MBA, simplifies it, and checks it evaluates like `v0 + v1`.
+    #[cfg(feature = "parse")]
+    #[test]
+    fn parses_simplifies_and_evaluates_mba() {
+        let src = CString::new("(v0^v1)+2*(v0&v1)").unwrap();
+        let mut parsed: *mut c_void = std::ptr::null_mut();
+        let rc = unsafe { rumba_expr_parse(src.as_ptr(), &mut parsed) };
+        assert_eq!(rc, 0);
+        assert!(!parsed.is_null());
+
+        // rumba_expr_simplify consumes `parsed` and returns a fresh handle.
+        let simplified = unsafe { rumba_expr_simplify(parsed, 64) };
+        assert!(!simplified.is_null());
+
+        let vars = [123u64, 456u64];
+        let got = unsafe { rumba_expr_eval(simplified, 64, vars.as_ptr(), vars.len()) };
+        assert_eq!(got, 123u64.wrapping_add(456));
+
+        unsafe { rumba_expr_free(simplified) };
+    }
+}
