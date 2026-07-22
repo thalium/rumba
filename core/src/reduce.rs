@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{
-    expr::Expr,
-    varint::make_mask,
-};
+use crate::{expr::Expr, varint::make_mask};
 
 /// Distributes an expression
 fn distribute<F>(
@@ -162,10 +159,14 @@ impl Reducer {
             Expr::Const(v) => Expr::Const(!v),
 
             // De Morgan's laws
-            Expr::And(exprs) => Expr::Or(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect()),
+            Expr::And(exprs) => {
+                Expr::Or(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect())
+            }
 
             // De Morgan's laws
-            Expr::Or(exprs) => Expr::And(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect()),
+            Expr::Or(exprs) => {
+                Expr::And(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect())
+            }
 
             _ => !self.reduce_masked(expr),
         }

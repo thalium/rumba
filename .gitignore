@@ -4,4 +4,11 @@
 build
 *.csv
 out
-out.txt/ng
+out.txt
+/ng
+/.serena
+/target/
+Cargo.lock.orig
+__pycache__/
+*.py[cod]
+.pytest_cache/

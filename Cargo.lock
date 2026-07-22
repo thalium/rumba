@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "c"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rumba-core",
 ]
@@ -896,7 +896,7 @@ dependencies = [
 
 [[package]]
 name = "pyrumba"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "pyo3",
  "rumba-core",
@@ -1011,7 +1011,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rumba"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "env_logger",
@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "rumba-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cranelift",
  "criterion",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "wasm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "console_error_panic_hook",
  "console_log",
