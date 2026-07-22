@@ -12,10 +12,14 @@ use crate::{
     simplify::simplify_mba,
 };
 
+/// A single instruction defining variable [`Insn::id`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct Insn {
+    /// The variable this instruction defines.
     pub id: VarId,
+    /// The bit width of the defined variable.
     pub ty: u8,
+    /// How the variable's value is produced.
     pub kind: InsnKind,
 }
 
@@ -42,14 +46,18 @@ impl Display for Insn {
     }
 }
 
+/// How an [`Insn`] computes its variable's value.
 #[derive(Debug, PartialEq, Eq)]
 pub enum InsnKind {
+    /// The variable is assigned the value of an expression.
     Assign(Expr),
+    /// The variable is an opaque function of the given operands.
     Unknown(Vec<VarId>),
 }
 
 type Uses = HashSet<VarId>;
 
+/// A sequence of [`Insn`]s together with their use graph.
 #[derive(Debug)]
 pub struct Program {
     insns: IndexMap<VarId, Insn>,

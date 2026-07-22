@@ -13,6 +13,7 @@ use crate::varint::{VarInt, make_mask};
 #[cfg(feature = "jit")]
 use crate::jit;
 
+/// Identifies a variable within an [`Expr`] by its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(pub usize);
 
@@ -28,23 +29,33 @@ impl From<usize> for VarId {
     }
 }
 
+/// A Mixed Boolean-Arithmetic expression tree.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Expr {
+    /// A variable, referenced by its [`VarId`].
     Var(VarId),
 
+    /// A constant value.
     Const(u64),
 
     // Unary
+    /// Bitwise complement (`~e`).
     Not(Box<Expr>),
+    /// Multiplication of an expression by a constant coefficient.
     Scale(u64, Box<Expr>),
 
     // Bitwise
+    /// Bitwise AND of all operands.
     And(Vec<Expr>),
+    /// Bitwise OR of all operands.
     Or(Vec<Expr>),
+    /// Bitwise XOR of all operands.
     Xor(Vec<Expr>),
 
     // Arithmetic
+    /// Arithmetic sum of all operands.
     Add(Vec<Expr>),
+    /// Arithmetic product of all operands.
     Mul(Vec<Expr>),
 }
 
@@ -133,6 +144,7 @@ impl From<u64> for Expr {
 }
 
 impl Expr {
+    /// Builds a constant expression from `c`.
     pub fn make_const(c: u64) -> Self {
         Expr::Const(c)
     }
@@ -478,7 +490,7 @@ impl Expr {
         self.repr_masked(n, make_mask(n), hex, latex)
     }
 
-    // Is this a bitwise expression
+    /// Whether this expression is purely bitwise (no arithmetic operators).
     pub fn is_bitwise(&self) -> bool {
         match self {
             Expr::Var(_) => true,
@@ -493,7 +505,7 @@ impl Expr {
         }
     }
 
-    // Are all variables in the given set
+    /// Whether every variable in this expression is contained in `allowed_vars`.
     pub fn variables_in(&self, allowed_vars: &Vec<usize>) -> bool {
         match self {
             Expr::Const(_) => true,

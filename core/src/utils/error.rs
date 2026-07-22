@@ -10,10 +10,15 @@ use crate::expr::{Expr, VarId};
 /// reason to abort the program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveError {
-    /// The linear MBA still held more than [`MAX_VARS`](crate::simplify::MAX_VARS)
-    /// variables after reduction / PCT expansion, so its truth table is too large
-    /// to build.
-    TooManyVariables { found: usize, max: usize },
+    /// The linear MBA still held more variables (`found`) than the solver's
+    /// internal limit (`max`) after reduction / PCT expansion, so its truth
+    /// table is too large to build.
+    TooManyVariables {
+        /// Number of variables the expression carried after reduction.
+        found: usize,
+        /// The solver's internal variable limit.
+        max: usize,
+    },
 
     /// A variable produced during reduction had no entry in the restore map.
     /// Indicates an inconsistent variable map rather than a hard input.
