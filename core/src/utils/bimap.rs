@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 pub struct BiMap<L, R> {
     left: HashMap<L, R>,
@@ -8,8 +8,8 @@ pub struct BiMap<L, R> {
 impl<L: Eq + std::hash::Hash + Clone, R: Eq + std::hash::Hash + Clone> BiMap<L, R> {
     pub fn new() -> Self {
         Self {
-            left: HashMap::new(),
-            right: HashMap::new(),
+            left: HashMap::default(),
+            right: HashMap::default(),
         }
     }
 

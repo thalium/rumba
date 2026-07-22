@@ -1,12 +1,12 @@
 use std::{
     cmp::max,
-    collections::HashSet,
     fmt::{self, Display},
     ops::{Add, BitAnd, BitOr, BitXor, Mul, Neg, Not, Sub},
     vec,
 };
 
 use rand::random_range;
+use rustc_hash::FxHashSet as HashSet;
 
 use crate::varint::{VarInt, make_mask};
 

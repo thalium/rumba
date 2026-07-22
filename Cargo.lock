@@ -1031,6 +1031,7 @@ dependencies = [
  "pest",
  "pest_derive",
  "rand",
+ "rustc-hash",
  "target-lexicon",
 ]
 

@@ -1,4 +1,5 @@
-use std::{cmp::max, collections::HashSet};
+use rustc_hash::FxHashSet as HashSet;
+use std::cmp::max;
 
 use crate::{
     expr::{Expr, VarId},
@@ -683,7 +684,7 @@ fn simplify_to_fixed_point<F>(mut e: Expr, mut simplify: F) -> Result<Expr, Solv
 where
     F: FnMut(Expr) -> Result<Expr, SolveError>,
 {
-    let mut seen = HashSet::from([e.clone()]);
+    let mut seen = HashSet::from_iter([e.clone()]);
     let mut best = e.clone();
 
     for _ in 0..MAX_SIMPLIFICATION_PASSES {

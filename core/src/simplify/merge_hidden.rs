@@ -8,7 +8,6 @@
 
 use std::{
     cell::Cell,
-    collections::{HashMap, HashSet},
 };
 
 use crate::{
@@ -18,6 +17,7 @@ use crate::{
 };
 
 use log::debug;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::{MBASolver, reduce_vars};
 
@@ -226,11 +226,11 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             return e;
         }
 
-        let mut aliases = HashMap::<VarId, Expr>::new();
+        let mut aliases = HashMap::<VarId, Expr>::default();
 
         // Word observations are not proofs, but they cheaply reject impossible
         // unary and binary bitwise dependencies before exact validation.
-        let mut visible_variables = HashSet::new();
+        let mut visible_variables = HashSet::default();
         for (_, definition) in &components {
             for variable in definition.get_vars() {
                 if self.non_linear_components.get_by_left(&variable).is_none() {
