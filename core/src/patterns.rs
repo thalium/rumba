@@ -154,53 +154,6 @@ fn are_negations(a: &Expr, b: &Expr, mask: u64) -> bool {
         || scale_relation(&b, &a, mask) == Some(mask)
 }
 
-fn is_low_bit_of(candidate: &Expr, base: &Expr, mask: u64) -> bool {
-    let Expr::And(children) = candidate else {
-        return false;
-    };
-    children.len() == 2
-        && ((scale_relation(&children[0], base, mask) == Some(1)
-            && are_negations(&children[0], &children[1], mask))
-            || (scale_relation(&children[1], base, mask) == Some(1)
-                && are_negations(&children[0], &children[1], mask)))
-}
-
-fn rebuild_and(mut children: Vec<Expr>) -> Expr {
-    match children.len() {
-        0 => Expr::make_const(u64::MAX),
-        1 => children.remove(0),
-        _ => Expr::And(children),
-    }
-}
-
-/// Recognizes the reduced form of a low-bit mask `m·X - 1`.
-///
-/// After `reduce`, `m·X - 1` is an `Add` of a `-1` constant (`mask`, i.e. all
-/// ones) and the terms of `m·X`. The latter may be a single `Scale(m, C)` or,
-/// when `X` is a sum, a distributed group like `m·x + m·y`. Returns `(m, C)` —
-/// the even-multiple coefficient and `X`'s core — via [`split`].
-fn as_low_bit_mask(e: &Expr, mask: u64) -> Option<(u64, Expr)> {
-    let Expr::Add(terms) = e else {
-        return None;
-    };
-    let mut neg_one = false;
-    let mut rest: Vec<Expr> = Vec::with_capacity(terms.len());
-    for t in terms {
-        match t {
-            Expr::Const(c) if (c & mask) == mask => neg_one = true,
-            _ => rest.push(t.clone()),
-        }
-    }
-    if !neg_one || rest.is_empty() {
-        return None;
-    }
-    let m_x = match rest.len() {
-        1 => rest.remove(0),
-        _ => Expr::Add(rest),
-    };
-    Some(split(&m_x, mask))
-}
-
 /// Returns the non-constant part of a reduced `m*X - 1` mask.
 fn low_bit_mask_multiple(e: &Expr, mask: u64) -> Option<Expr> {
     let Expr::Add(terms) = e else {
@@ -226,27 +179,14 @@ fn low_bit_mask_multiple(e: &Expr, mask: u64) -> Option<Expr> {
 
 mod low_bit_annihilator;
 mod low_bit_mask_split;
-mod low_bit_redundant_mask;
-mod low_bit_remainder;
-mod nested_bitwise_identity;
-mod successor_boundary_absorption;
+mod masked_group_collapse;
 
 use low_bit_annihilator::LowBitAnnihilator;
 use low_bit_mask_split::LowBitMaskSplit;
-use low_bit_redundant_mask::LowBitRedundantMask;
-use low_bit_remainder::LowBitRemainder;
-use nested_bitwise_identity::NestedBitwiseIdentity;
-use successor_boundary_absorption::SuccessorBoundaryAbsorption;
+use masked_group_collapse::MaskedGroupCollapse;
 
 /// The registered patterns, tried in order at each node.
-static PATTERNS: &[&dyn Pattern] = &[
-    &LowBitAnnihilator,
-    &LowBitRedundantMask,
-    &LowBitRemainder,
-    &SuccessorBoundaryAbsorption,
-    &LowBitMaskSplit,
-    &NestedBitwiseIdentity,
-];
+static PATTERNS: &[&dyn Pattern] = &[&LowBitAnnihilator, &LowBitMaskSplit, &MaskedGroupCollapse];
 
 /// Applies the registered patterns to `e`, walking bottom-up.
 pub fn apply_patterns(e: Expr, mask: u64) -> Expr {
@@ -370,131 +310,6 @@ mod tests {
         }
     }
 
-    /// `(X & -X) & (m·X - 1)` reduced, then run through the pattern pass.
-    fn redundant_mask(x: Expr, m: u64) -> Expr {
-        let mask = make_mask(N);
-        let e = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce_masked(mask);
-        apply_patterns(e, mask)
-    }
-
-    #[test]
-    fn mask_reduces_to_low_bit() {
-        let mask = make_mask(N);
-        let expected = (var(0) & (-var(0))).reduce_masked(mask);
-        for m in [2u64, 4, 6, 8, 10, 1 << 20] {
-            assert_eq!(redundant_mask(var(0), m), expected, "m={m}");
-        }
-    }
-
-    #[test]
-    fn redundant_mask_fires_on_affine_core() {
-        let mask = make_mask(N);
-        let x = var(0) - var(1);
-        let expected = (x.clone() & (-x.clone())).reduce_masked(mask);
-        for m in [2u64, 4, 6, 10] {
-            assert_eq!(redundant_mask(x.clone(), m), expected, "m={m}");
-        }
-    }
-
-    #[test]
-    fn mask_fires_within_larger_and() {
-        let mask = make_mask(N);
-        let x = var(0);
-        let e =
-            (var(1) & x.clone() & (-x.clone()) & (6u64 * x.clone() - Expr::make_const(1)) & var(2))
-                .reduce_masked(mask);
-        let expected = (var(1) & x.clone() & (-x.clone()) & var(2)).reduce_masked(mask);
-        assert_eq!(apply_patterns(e, mask), expected);
-    }
-
-    #[test]
-    fn mask_ignores_odd_multiple() {
-        // `3·X - 1` is not zero across the low bits: identity does not hold.
-        let mask = make_mask(N);
-        let x = var(0);
-        let e = (x.clone() & (-x.clone()) & (3u64 * x - Expr::make_const(1))).reduce_masked(mask);
-        let expected = (var(0) & (-var(0))).reduce_masked(mask);
-        assert_ne!(apply_patterns(e, mask), expected);
-    }
-
-    #[test]
-    fn mask_ignores_missing_negation() {
-        let mask = make_mask(N);
-        let x = var(0);
-        let e = (x.clone() & (2u64 * x - Expr::make_const(1))).reduce_masked(mask);
-        assert_eq!(apply_patterns(e.clone(), mask), e);
-    }
-
-    #[test]
-    fn mask_is_semantically_equivalent() {
-        let mask = make_mask(N);
-        for m in [2u64, 4, 6, 8, 10, 1 << 20] {
-            let x = var(0);
-            let before =
-                (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce_masked(mask);
-            let after = apply_patterns(before.clone(), mask);
-            assert!(
-                before.sem_equal_masked(&after, mask, 500).is_ok(),
-                "m={m} rewrite changed semantics"
-            );
-        }
-    }
-
-    #[test]
-    fn low_bit_remainder_is_absorbed_by_base() {
-        let mask = make_mask(N);
-        for x in [var(0), var(0) - var(1), var(0) + 2u64 * var(1)] {
-            let low_bit = (x.clone() & (-x.clone())).reduce_masked(mask);
-            let remainder = (x.clone() - low_bit).reduce_masked(mask);
-            let before = (x & remainder.clone()).reduce_masked(mask);
-            assert_eq!(apply_patterns(before, mask), remainder);
-        }
-    }
-
-    #[test]
-    fn low_bit_is_reconstructed_from_complementary_mask() {
-        let mask = make_mask(N);
-        for x in [var(0), var(0) - var(1), var(0) + 2u64 * var(1)] {
-            let low_bit = (x.clone() & (-x.clone())).reduce_masked(mask);
-            let complementary =
-                (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce_masked(mask);
-            let before = (x & complementary).reduce_masked(mask);
-            assert_eq!(apply_patterns(before, mask), low_bit);
-        }
-    }
-
-    #[test]
-    fn successor_boundary_is_absorbed_by_predecessor() {
-        let mask = make_mask(N);
-        for x in [
-            var(0),
-            var(0) - var(1),
-            var(0) & var(1),
-            var(0) + (var(0) & var(1)),
-        ] {
-            let successor = (x.clone() + Expr::make_const(1)).reduce_masked(mask);
-            for multiple in [2u64, 4, 6, mask - 1] {
-                let boundary =
-                    (successor.clone() & (multiple * successor.clone())).reduce_masked(mask);
-                let before = (x.clone() & boundary.clone()).reduce_masked(mask);
-                assert_eq!(
-                    apply_patterns(before, mask),
-                    boundary,
-                    "multiple={multiple}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn successor_boundary_keeps_odd_multiple() {
-        let mask = make_mask(N);
-        let x = var(0) - var(1);
-        let successor = (x.clone() + Expr::make_const(1)).reduce_masked(mask);
-        let before = (x & successor.clone() & (3u64 * successor)).reduce_masked(mask);
-        assert_eq!(apply_patterns(before.clone(), mask), before);
-    }
-
     /// `a·(X & M) + a·((-X) & M)` with `M = m·X - 1`, reduced and rewritten.
     fn mask_split(x: Expr, a: u64, m: u64) -> Expr {
         let mask = make_mask(N);
@@ -583,68 +398,47 @@ mod tests {
         assert_eq!(out, e);
     }
 
-    /// `X & -((X | Y) & -X)` reduced, then run through the pattern pass.
-    fn nested(x: Expr, y: Option<Expr>) -> Expr {
+    /// The residue left on `loki_tiny.csv:8584`: `(v1 & M) - ((v0 & v1) & M)`
+    /// with `M = 2·C & -C` and `C = v1 & ~v0`. It vanishes because the two
+    /// terms differ exactly on `C`, which `M` annihilates.
+    #[test]
+    fn masked_group_collapses_difference_on_annihilated_atom() {
         let mask = make_mask(N);
-        let disj = match y {
-            Some(y) => x.clone() | y,
-            None => x.clone(),
-        };
-        let e = (x.clone() & (-(disj & (-x.clone())))).reduce_masked(mask);
-        apply_patterns(e, mask)
+        let c = (var(1) - (var(0) & var(1))).reduce_masked(mask);
+        let m = |t: Expr| t & (2u64 * c.clone()) & (-c.clone());
+        let before = (m(var(1)) - m(var(0) & var(1))).reduce_masked(mask);
+        assert!(
+            before.sem_equal_masked(&Expr::zero(), mask, 500).is_ok(),
+            "residue is not semantically zero"
+        );
+        assert_eq!(apply_patterns(before, mask), Expr::zero());
     }
 
+    /// The residue left on `loki_tiny.csv:4220`: `((v0 & v1) & M) - (v0 & M)`
+    /// with `M = -2·D & -D` and `D = v0 | v1`. Here the differing atom is
+    /// `v0 & ~v1`, which `M` annihilates only via its containment in `D`.
     #[test]
-    fn nested_collapses_y_absent() {
+    fn masked_group_collapses_via_submask_containment() {
         let mask = make_mask(N);
-        assert_eq!(nested(var(0), None), var(0).reduce_masked(mask));
-        // Works with a compound core `X = v0 + v1`.
-        let x = var(0) + var(1);
-        assert_eq!(nested(x.clone(), None), x.reduce_masked(mask));
+        let d = (var(0) + var(1) - (var(0) & var(1))).reduce_masked(mask);
+        let m = |t: Expr| t & ((-2i64 as u64) * d.clone()) & (-d.clone());
+        let before = (m(var(0) & var(1)) - m(var(0))).reduce_masked(mask);
+        assert!(
+            before.sem_equal_masked(&Expr::zero(), mask, 500).is_ok(),
+            "residue is not semantically zero"
+        );
+        assert_eq!(apply_patterns(before, mask), Expr::zero());
     }
 
+    /// The same shape with an *odd* multiple: the annihilator does not hold and
+    /// the group must survive untouched.
     #[test]
-    fn nested_collapses_y_present() {
+    fn masked_group_keeps_odd_multiple() {
         let mask = make_mask(N);
-        assert_eq!(nested(var(0), Some(var(1))), var(0).reduce_masked(mask));
-    }
-
-    #[test]
-    fn nested_fires_within_larger_and() {
-        let mask = make_mask(N);
-        let x = var(0);
-        let redundant = -((x.clone()) & (-x.clone()));
-        let e = (var(1) & x.clone() & redundant & var(2)).reduce_masked(mask);
-        let expected = (var(1) & x.clone() & var(2)).reduce_masked(mask);
-        assert_eq!(apply_patterns(e, mask), expected);
-    }
-
-    #[test]
-    fn nested_is_semantically_equivalent() {
-        let mask = make_mask(N);
-        for x in [var(0), var(0) + var(1), !var(0)] {
-            for y in [None, Some(var(1)), Some(var(0) & var(1))] {
-                let disj = match &y {
-                    Some(y) => x.clone() | y.clone(),
-                    None => x.clone(),
-                };
-                let before = (x.clone() & (-(disj & (-x.clone())))).reduce_masked(mask);
-                let after = apply_patterns(before.clone(), mask);
-                assert!(
-                    before.sem_equal_masked(&after, mask, 500).is_ok(),
-                    "rewrite changed semantics"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn nested_ignores_unrelated() {
-        // Redundant conjunct present but the required sibling `X` is not.
-        let mask = make_mask(N);
-        let x = var(0);
-        let e = (var(1) & (-((x.clone()) & (-x.clone())))).reduce_masked(mask);
-        assert_eq!(apply_patterns(e.clone(), mask), e);
+        let c = (var(1) - (var(0) & var(1))).reduce_masked(mask);
+        let m = |t: Expr| t & (3u64 * c.clone()) & (-c.clone());
+        let before = (m(var(1)) - m(var(0) & var(1))).reduce_masked(mask);
+        assert_eq!(apply_patterns(before.clone(), mask), before);
     }
 
     #[test]
