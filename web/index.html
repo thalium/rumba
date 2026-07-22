@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rumba — MBA simplifier</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235b3df5'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='white' stroke-width='3'/%3E%3Cpath d='M16 10.5v11M10.5 16h11' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #17161f;
+    --accent: #5b3df5;
+    --accent-dark: #4326d6;
+    --muted: #4a4860;
+    --dim: #8a88a0;
+    --faint: #a8a6bc;
+    --line: #e0ddf0;
+    --ok: #3f8000;
+    --bad: #e23d6b;
+    --lime: #c8f000;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #f1f0f8; }
+  body {
+    font-family: "Space Grotesk", system-ui, sans-serif;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    padding: 56px 24px 72px;
+    background-color: #f1f0f8;
+    background-image: radial-gradient(#d9d6ec 1.1px, transparent 1.1px);
+    background-size: 22px 22px;
+  }
+  main { max-width: 680px; margin: 0 auto; }
+  ::selection { background: rgba(91,61,245,.18); }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-dark); text-decoration: underline; text-underline-offset: 3px; }
+  textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .mono { font-family: "Space Mono", monospace; }
+
+  header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 24px; padding-bottom: 28px; border-bottom: 2px solid var(--ink);
+  }
+  .title { display: flex; align-items: center; gap: 12px; }
+  h1 { font-weight: 700; font-size: 30px; letter-spacing: -.03em; margin: 0; display: flex; align-items: center; }
+  .mark { width: 30px; height: 30px; flex: none; color: var(--accent); margin-right: 11px; }
+  .word { line-height: 1; }
+  .caret {
+    display: inline-block; width: 12px; height: 22px; margin-left: 3px;
+    background: var(--accent); vertical-align: -2px;
+    animation: rmb-blink 1.1s steps(1) infinite;
+  }
+  @keyframes rmb-blink { 0%, 100% { opacity: 1 } 50% { opacity: 0 } }
+  @media (prefers-reduced-motion: reduce) { .caret { animation: none } }
+  .badge {
+    font-family: "Space Mono", monospace; font-size: 10.5px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--accent);
+    background: rgba(91,61,245,.1); border-radius: 999px; padding: 4px 10px;
+  }
+  .tagline { margin: 14px 0 0; font-size: 14.5px; line-height: 1.6; color: var(--muted); max-width: 60ch; }
+  nav {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+    flex: none; padding-top: 4px; font-family: "Space Mono", monospace; font-size: 12.5px;
+  }
+
+  .card {
+    margin-top: 32px; background: #fff; border: 2px solid var(--ink);
+    border-radius: 16px; box-shadow: 6px 6px 0 rgba(91,61,245,.9); overflow: hidden;
+  }
+  .card-body { padding: 22px 22px 20px; }
+  .field-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+  .eyebrow {
+    font-family: "Space Mono", monospace; font-size: 10.5px; font-weight: 700;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin: 0;
+  }
+  .vars { font-family: "Space Mono", monospace; font-size: 11px; color: var(--faint); }
+  textarea {
+    width: 100%; min-height: 96px; resize: vertical; padding: 14px 15px;
+    font-family: "Space Mono", monospace; font-size: 14.5px; line-height: 1.55;
+    color: var(--ink); background: #f7f6fc; border: 1.5px solid var(--line); border-radius: 10px;
+  }
+
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 14px; }
+  .run {
+    font-family: "Space Grotesk", sans-serif; font-size: 14px; font-weight: 600;
+    color: #fff; background: var(--accent); border: 1.5px solid var(--ink);
+    border-radius: 9px; padding: 9px 20px; cursor: pointer; box-shadow: 2px 2px 0 var(--ink);
+  }
+  .run:hover:not(:disabled) { background: #4a2fe0; }
+  .run:active:not(:disabled) { box-shadow: 0 0 0 var(--ink); transform: translate(2px, 2px); }
+  .run:disabled { opacity: .45; cursor: default; box-shadow: 2px 2px 0 var(--ink); }
+
+  .bits { display: flex; align-items: center; gap: 8px; }
+  .bits-label { font-family: "Space Mono", monospace; font-size: 11px; color: var(--dim); }
+  .segmented {
+    display: inline-flex; background: #f2f0fb; border: 1.5px solid var(--line);
+    border-radius: 9px; padding: 3px; gap: 2px;
+  }
+  .segmented button {
+    font-family: "Space Mono", monospace; font-size: 12px; font-weight: 700;
+    border: none; border-radius: 6px; padding: 5px 11px; cursor: pointer;
+    background: transparent; color: #6a6880;
+  }
+  .segmented button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .status { font-family: "Space Mono", monospace; font-size: 11.5px; color: var(--faint); margin-left: auto; }
+
+  .result { border-top: 2px solid var(--ink); background: #fbfaff; padding: 20px 22px 22px; }
+  .result-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .pill {
+    font-family: "Space Mono", monospace; font-size: 10px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 3px 9px;
+  }
+  .pill.simplified { background: var(--lime); color: #2e3b00; }
+  .pill.unchanged { background: #eeecfa; color: #6a6880; }
+  .pill.error { background: rgba(226,61,107,.12); color: var(--bad); }
+  .out {
+    font-family: "Space Mono", monospace; font-size: 16px; line-height: 1.6;
+    color: var(--ink); background: #fff; border: 1.5px solid var(--ink);
+    border-radius: 10px; padding: 15px 16px;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .out.bad { color: var(--bad); }
+  .checked {
+    margin: 12px 0 0; font-family: "Space Mono", monospace;
+    font-size: 12px; line-height: 1.5; color: var(--ok);
+  }
+  .note { margin: 8px 0 0; font-size: 13px; line-height: 1.5; color: var(--dim); }
+
+  .examples { margin-top: 30px; }
+  .examples .eyebrow { display: block; margin-bottom: 12px; }
+  .examples ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .examples li { min-width: 0; }
+  .examples button {
+    display: block; width: 100%; min-width: 0; max-width: 100%; text-align: left;
+    background: #fff; border: 1.5px solid var(--line); border-radius: 11px;
+    padding: 12px 14px; cursor: pointer; overflow: hidden;
+  }
+  .examples button:hover { border-color: var(--ink); box-shadow: 3px 3px 0 var(--ink); transform: translate(-1px, -1px); }
+  .ex-label { display: block; font-family: "Space Grotesk", sans-serif; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  .ex-src {
+    display: block; font-family: "Space Mono", monospace; font-size: 12.5px;
+    color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  footer {
+    margin-top: 40px; padding-top: 20px; border-top: 1.5px solid var(--line);
+    font-size: 12.5px; line-height: 1.6; color: var(--dim);
+  }
+
+  @media (max-width: 560px) {
+    body { padding: 32px 16px 56px; }
+    header { flex-direction: column; gap: 16px; }
+    nav { flex-direction: row; align-items: center; gap: 16px; }
+    .status { margin-left: 0; width: 100%; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="title">
+        <h1>
+          <!-- The XOR operator: a `+` (arithmetic) inside a circle (bitwise),
+               i.e. Mixed Boolean-Arithmetic in one glyph. Identical geometry to
+               the favicon above, so the two cannot drift apart. The tile is
+               currentColor so the accent stays driven by the CSS token. -->
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+            <rect width="32" height="32" rx="7" fill="currentColor"/>
+            <circle cx="16" cy="16" r="9" fill="none" stroke="#fff" stroke-width="3"/>
+            <path d="M16 10.5v11M10.5 16h11" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+          </svg>
+          <span class="word">rumba</span><span class="caret" aria-hidden="true"></span>
+        </h1>
+        <span class="badge">MBA&nbsp;simplifier</span>
+      </div>
+      <p class="tagline">
+        Rumba is an algebraic Mixed Boolean-Arithmetic solver.<br/>
+        It compiles to WebAssembly and runs entirely in this tab.
+      </p>
+    </div>
+    <nav>
+      <a href="https://hal.science/hal-05578742/document">paper ↗</a>
+      <a href="https://github.com/thalium/rumba">source ↗</a>
+    </nav>
+  </header>
+
+  <section class="card">
+    <div class="card-body">
+      <div class="field-head">
+        <label class="eyebrow" for="input">Expression</label>
+        <span class="vars">variables: v0, v1, …</span>
+      </div>
+      <textarea id="input" spellcheck="false" autocapitalize="off" autocorrect="off"
+                placeholder="(v0^v1)+2*(v0&amp;v1)"></textarea>
+
+      <div class="controls">
+        <button class="run" id="run" disabled>Simplify →</button>
+        <div class="bits">
+          <span class="bits-label">bits</span>
+          <div class="segmented" id="bits" role="group" aria-label="Bit width"></div>
+        </div>
+        <span class="status" id="status">loading…</span>
+      </div>
+    </div>
+
+    <div class="result" id="result" hidden>
+      <div class="result-head">
+        <span class="eyebrow">Result</span>
+        <span class="pill" id="pill"></span>
+      </div>
+      <div class="out" id="output"></div>
+      <p class="checked" id="checked" hidden></p>
+      <p class="note" id="note" hidden></p>
+    </div>
+  </section>
+
+  <section class="examples">
+    <span class="eyebrow">Try an example</span>
+    <ul id="examples"></ul>
+  </section>
+
+  <footer>
+    Simplification is best-effort: Rumba returns an error or leaves the input
+    untouched rather than guessing. Every result is checked against the input on
+    random assignments before it is shown.
+  </footer>
+</main>
+
+<script type="module">
+import init, { ExprWasm } from "./pkg/wasm.js";
+
+const $ = (id) => document.getElementById(id);
+const input = $("input"), run = $("run"), status = $("status"), bitsEl = $("bits");
+const result = $("result"), output = $("output"), note = $("note");
+const checked = $("checked"), pill = $("pill");
+
+const SAMPLES = 2000;
+const BITS = [8, 16, 32, 64];
+let bits = 64;
+let ran = false;
+
+const EXAMPLES = [
+  { label: "addition, hidden behind xor + carry", src: "(v0^v1)+2*(v0&v1)" },
+  { label: "xor, hidden behind or − and", src: "(v0|v1)-(v0&v1)" },
+  {
+    label: "nonlinear — from the qsynth_ea benchmark",
+    src: "- (- (- ((v1 & v1) * (v1 | v1) + (v1 & ~ v1) * (~ v1 & v1)) - 1) - 1) - 1",
+  },
+  {
+    label: "14-term linear MBA",
+    src: "-34*~v1*(v0&v1)-36*~v1*(v0&~v1)+12*~v1*~(v0&v1)+10*~v1*~(v0^v1)-24*~v1*~(v0|v1)-36*~v1*~(v0|~v1)+17*v1*(v0&v1)+18*v1*(v0&~v1)-6*v1*~(v0&v1)-5*v1*~(v0^v1)+12*v1*~(v0|v1)+18*v1*~(v0|~v1)+22*~v1*(v0|v1)-11*v1*(v0|v1)",
+  },
+];
+
+for (const b of BITS) {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.textContent = b;
+  el.setAttribute("aria-pressed", String(b === bits));
+  el.addEventListener("click", () => {
+    bits = b;
+    for (const other of bitsEl.children) {
+      other.setAttribute("aria-pressed", String(Number(other.textContent) === bits));
+    }
+    if (ran) simplify();
+  });
+  bitsEl.append(el);
+}
+
+for (const { label, src } of EXAMPLES) {
+  const li = document.createElement("li");
+  const b = document.createElement("button");
+  b.type = "button";
+  b.innerHTML = `<span class="ex-label"></span><span class="ex-src"></span>`;
+  b.querySelector(".ex-label").textContent = label;
+  b.querySelector(".ex-src").textContent = src;
+  b.title = src;
+  b.addEventListener("click", () => { input.value = src; simplify(); });
+  li.append(b);
+  $("examples").append(li);
+}
+
+function show(text, { state, ok = null, hint = null }) {
+  result.hidden = false;
+  output.textContent = text;
+  output.classList.toggle("bad", state === "error" || state === "unsound");
+  // "unsound" is reserved for a failed equivalence check — a wrong answer.
+  // A parse or solver failure is an "error": no answer was produced at all.
+  pill.className = `pill ${state === "unsound" ? "error" : state}`;
+  pill.textContent = state;
+  checked.hidden = ok === null;
+  checked.textContent = ok === null ? "" : `✓ ${ok}`;
+  note.hidden = hint === null;
+  note.textContent = hint ?? "";
+}
+
+function simplify() {
+  const src = input.value.trim();
+  if (!src) { result.hidden = true; ran = false; return; }
+  ran = true;
+
+  let expr;
+  try {
+    expr = ExprWasm.parse(src);
+  } catch (e) {
+    show(String(e), { state: "error", hint: "The expression could not be parsed." });
+    return;
+  }
+
+  // repr(), not to_string(): Display renders constants in hex, which disagrees
+  // with the CLI's default output. The parsed form (not the raw text) is what
+  // makes the "unchanged" check meaningful — whitespace and redundant parens
+  // are already normalised away on both sides.
+  const before = expr.repr(bits, false, false);
+  let simplified;
+  try {
+    simplified = expr.solve(bits);
+  } catch (e) {
+    show(String(e), { state: "error", hint: `Rumba could not simplify this at ${bits} bits.` });
+    return;
+  }
+
+  const after = simplified.repr(bits, false, false);
+
+  // Same check as the CLI's --test: sample the input and the result on random
+  // assignments and compare. A mismatch means an unsound simplification, so it
+  // is reported as an error rather than folded into the hint.
+  const counterexample = expr.sem_equal(simplified, bits, SAMPLES);
+  if (counterexample) {
+    show(after, {
+      state: "unsound",
+      hint: `Input and result disagree at ${counterexample} — please report this.`,
+    });
+    return;
+  }
+
+  show(after, {
+    state: after === before ? "unchanged" : "simplified",
+    ok: `Checked against the input on ${SAMPLES.toLocaleString()} random assignments at ${bits} bits — all agree.`,
+    hint: after === before ? "No simplification found — this is the input, unchanged." : null,
+  });
+}
+
+run.addEventListener("click", simplify);
+input.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  // Shift+Enter would otherwise insert a newline; expressions are single-line.
+  if (e.shiftKey || e.metaKey || e.ctrlKey) { e.preventDefault(); simplify(); }
+});
+
+init()
+  .then(() => { run.disabled = false; status.textContent = "Shift + Enter to run"; })
+  .catch((e) => { status.textContent = "failed to load the WebAssembly module"; console.error(e); });
+</script>
+</body>
+</html>

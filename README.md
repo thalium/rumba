@@ -13,6 +13,9 @@ code-obfuscation primitive. Rumba recovers the underlying expression:
 Rumba is the reference implementation of the algorithm described in
 [hal-05578742](https://hal.science/hal-05578742/document).
 
+Try it in your browser: **[playground](https://thalium.github.io/rumba/)** — the
+simplifier compiled to WebAssembly, running locally in the page.
+
 ## Installation
 
 ```sh

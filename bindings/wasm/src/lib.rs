@@ -172,17 +172,29 @@ impl ExprWasm {
         self.inner.is_bitwise()
     }
 
+    /// Checks this expression against `other` on `samples` random assignments,
+    /// as the CLI's `--test` does. Returns `null` when every sample agrees, or
+    /// a description of the first counterexample found.
+    #[wasm_bindgen]
+    pub fn sem_equal(&self, other: &ExprWasm, n: u8, samples: usize) -> Option<String> {
+        self.inner
+            .sem_equal(&other.inner, n, samples)
+            .err()
+            .map(|(vars, got, want)| {
+                let assignment = vars
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| format!("v{i} = {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{assignment}: {got} != {want}")
+            })
+    }
+
     #[wasm_bindgen]
     #[allow(clippy::boxed_local)]
     pub fn variables_in(&self, vars: Box<[f64]>) -> bool {
         let vars: Vec<usize> = vars.iter().map(|v| *v as usize).collect();
         self.inner.variables_in(&vars)
-    }
-
-    #[wasm_bindgen]
-    pub fn simplify(&self, n: u8) -> ExprWasm {
-        ExprWasm {
-            inner: self.inner.clone().reduce(n),
-        }
     }
 }
