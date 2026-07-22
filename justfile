@@ -19,7 +19,8 @@ rumba *ARGS:
 test:
     cargo test datasets --release --all-features -- --nocapture
 
-# The dataset gate with the pattern engine disabled, to score its cost/benefit
+# The dataset gate with the pattern engine disabled, to score its cost/benefit.
+# Trips the loki_tiny NG gate by design -- the printed RESULTS are the point.
 test-nopatterns:
     RUMBA_PATTERNS=0 cargo test datasets --release --all-features -- --nocapture
 
