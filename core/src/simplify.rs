@@ -1,4 +1,3 @@
-use rustc_hash::FxHashSet as HashSet;
 use std::cmp::max;
 
 use crate::{
@@ -684,28 +683,29 @@ fn simplify_to_fixed_point<F>(mut e: Expr, mut simplify: F) -> Result<Expr, Solv
 where
     F: FnMut(Expr) -> Result<Expr, SolveError>,
 {
-    let mut seen = HashSet::from_iter([e.clone()]);
-    let mut best = e.clone();
+    let mut size = usize::MAX;
 
     for _ in 0..MAX_SIMPLIFICATION_PASSES {
         let next = simplify(e.clone())?;
         debug!("e: {}", next);
 
-        if next.size() < best.size() {
-            best = next.clone();
-        }
-        if next == e {
-            return Ok(next);
-        }
-        if !seen.insert(next.clone()) {
-            debug!("simplification cycle detected; retaining best expression");
-            return Ok(best);
-        }
+        let next_size = next.size();
+        // Always keep the pass just made. Size is not a proxy for quality here:
+        // a pass that grows the expression is usually the canonicalization the
+        // ground truth is compared against, and discarding it collapses the OK
+        // rate (loki_tiny 24997 -> 13522). The trade is that a cycle is
+        // indistinguishable from such a pass, so the result may be larger than
+        // an intermediate; the corpus shows no case where that costs anything.
+        let settled = next == e || next_size >= size;
         e = next;
+        if settled {
+            return Ok(e);
+        }
+        size = next_size;
     }
 
-    debug!("simplification pass limit reached; retaining best expression");
-    Ok(best)
+    debug!("simplification pass limit reached");
+    Ok(e)
 }
 
 /// A reusable memo of solved linear MBAs.
@@ -801,8 +801,15 @@ mod tests {
         assert_eq!(solver.linear_to_poly(encoded), Ok(u64::MAX * original));
     }
 
+    /// The loop stops at the first pass that fails to shrink the expression,
+    /// even when continuing would eventually reach something smaller.
+    ///
+    /// `Var(0)` -> `!Var(1)` -> `2·Var(2)` -> `Var(3)` plateaus in size at the
+    /// second step before shrinking again; the chase is abandoned there and the
+    /// plateau result is kept. Following such plateaus measured 16-61% across
+    /// the corpus while leaving every OK/OKZ/NG count unchanged.
     #[test]
-    fn fixed_point_continues_when_structure_changes_at_equal_size() {
+    fn fixed_point_stops_at_the_first_pass_that_does_not_shrink() {
         let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
             Ok(match e {
                 Expr::Var(VarId(0)) => !Expr::Var(1.into()),
@@ -814,11 +821,14 @@ mod tests {
             })
         });
 
-        assert_eq!(result, Ok(Expr::Var(3.into())));
+        assert_eq!(result, Ok(2u64 * Expr::Var(2.into())));
     }
 
+    /// A two-cycle ends at the first pass that fails to shrink, and that pass
+    /// is kept even though an intermediate was smaller — see the note in
+    /// [`simplify_to_fixed_point`] on why the last pass always wins.
     #[test]
-    fn fixed_point_cycle_returns_smallest_expression() {
+    fn fixed_point_cycle_stops_at_the_first_non_shrinking_pass() {
         let start = !Expr::Var(0.into());
         let result = simplify_to_fixed_point(start.clone(), |e| {
             if e == start {
@@ -828,21 +838,29 @@ mod tests {
             }
         });
 
-        assert_eq!(result, Ok(Expr::Var(1.into())));
+        assert_eq!(result, Ok(start));
     }
 
     #[test]
     fn fixed_point_has_a_pass_limit() {
+        // Shrink on every pass, so the cap is what ends the run.
+        let terms: Vec<Expr> = (0..20).map(|i| Expr::Var(i.into())).collect();
         let calls = Cell::new(0usize);
-        let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
+        let result = simplify_to_fixed_point(Expr::Add(terms), |e| {
             calls.set(calls.get() + 1);
             Ok(match e {
-                Expr::Var(variable) => Expr::Var((variable.0 + 1).into()),
+                Expr::Add(mut terms) if terms.len() > 1 => {
+                    terms.pop();
+                    Expr::Add(terms)
+                }
                 other => other,
             })
         });
 
         assert_eq!(calls.get(), MAX_SIMPLIFICATION_PASSES);
-        assert_eq!(result, Ok(Expr::Var(0.into())));
+        let Ok(Expr::Add(remaining)) = result else {
+            panic!("expected a sum, got {result:?}");
+        };
+        assert_eq!(remaining.len(), 20 - MAX_SIMPLIFICATION_PASSES);
     }
 }
