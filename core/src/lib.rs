@@ -58,8 +58,16 @@ pub(crate) mod reduce;
 pub(crate) mod utils;
 pub(crate) mod varint;
 
-#[cfg(feature = "jit")]
+#[cfg(all(feature = "jit", not(feature = "internal-bench")))]
 pub(crate) mod jit;
+
+/// The JIT compiler, exposed only under the `internal-bench` feature so the
+/// in-tree benchmarks can reach it. Hidden from docs and not part of the public
+/// API; it is `pub(crate)` in every other configuration.
+#[doc(hidden)]
+#[cfg(feature = "internal-bench")]
+pub mod jit;
+
 /// A lower-level typed representation of MBA expressions used during solving.
 pub mod lang;
 

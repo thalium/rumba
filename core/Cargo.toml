@@ -27,3 +27,6 @@ path = "benches/bench.rs"
 [features]
 parse = ["pest", "pest_derive"]
 jit = ["cranelift", "memmap2", "target-lexicon"]
+# Exposes crate internals (the `jit` module) for the in-tree benchmarks only.
+# Not part of the public API; do not enable outside of `cargo bench`.
+internal-bench = ["jit", "parse"]

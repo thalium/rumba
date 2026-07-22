@@ -1,4 +1,4 @@
-#![cfg(all(feature = "parse", feature = "jit"))]
+#![cfg(feature = "internal-bench")]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::random_range;
@@ -21,7 +21,7 @@ fn bench_jit_compilation(c: &mut Criterion) {
 
 fn eval(e: &Expr, data: &Vec<Vec<u64>>) {
     for v in data {
-        let res = e.eval(v);
+        let res = e.eval(v, 64);
         std::hint::black_box(res);
     }
 }

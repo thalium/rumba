@@ -430,7 +430,8 @@ mod tests {
         let mask = make_mask(N);
         for m in [2u64, 4, 6, 8, 10, 1 << 20] {
             let x = var(0);
-            let before = (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce_masked(mask);
+            let before =
+                (x.clone() & (-x.clone()) & (m * x - Expr::make_const(1))).reduce_masked(mask);
             let after = apply_patterns(before.clone(), mask);
             assert!(
                 before.sem_equal_masked(&after, mask, 500).is_ok(),
@@ -455,7 +456,8 @@ mod tests {
         let mask = make_mask(N);
         for x in [var(0), var(0) - var(1), var(0) + 2u64 * var(1)] {
             let low_bit = (x.clone() & (-x.clone())).reduce_masked(mask);
-            let complementary = (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce_masked(mask);
+            let complementary =
+                (-Expr::make_const(1) - x.clone() + low_bit.clone()).reduce_masked(mask);
             let before = (x & complementary).reduce_masked(mask);
             assert_eq!(apply_patterns(before, mask), low_bit);
         }
@@ -472,7 +474,8 @@ mod tests {
         ] {
             let successor = (x.clone() + Expr::make_const(1)).reduce_masked(mask);
             for multiple in [2u64, 4, 6, mask - 1] {
-                let boundary = (successor.clone() & multiple * successor.clone()).reduce_masked(mask);
+                let boundary =
+                    (successor.clone() & (multiple * successor.clone())).reduce_masked(mask);
                 let before = (x.clone() & boundary.clone()).reduce_masked(mask);
                 assert_eq!(
                     apply_patterns(before, mask),
@@ -488,7 +491,7 @@ mod tests {
         let mask = make_mask(N);
         let x = var(0) - var(1);
         let successor = (x.clone() + Expr::make_const(1)).reduce_masked(mask);
-        let before = (x & successor.clone() & 3u64 * successor).reduce_masked(mask);
+        let before = (x & successor.clone() & (3u64 * successor)).reduce_masked(mask);
         assert_eq!(apply_patterns(before.clone(), mask), before);
     }
 
@@ -563,8 +566,8 @@ mod tests {
         let mask = make_mask(N);
         let x = var(0);
         let mm = 6u64 * x.clone() - Expr::make_const(1);
-        let e =
-            (var(1) + 3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x.clone()) & mm)).reduce_masked(mask);
+        let e = (var(1) + 3u64 * (x.clone() & mm.clone()) + 3u64 * ((-x.clone()) & mm))
+            .reduce_masked(mask);
         let expected = (var(1) + 3u64 * (6u64 * x)).reduce_masked(mask);
         assert_eq!(apply_patterns(e, mask), expected);
     }
