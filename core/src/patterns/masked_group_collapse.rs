@@ -51,6 +51,29 @@ fn as_term(e: &Expr) -> Option<Term> {
     })
 }
 
+/// Whether any conjunct of `term` could take part in a scale relation.
+///
+/// [`proves_zero`] can only fire once it pairs a base with a sibling that is a
+/// non-zero multiple of it, and [`scale_relation`] compares additive coefficient
+/// maps: two *distinct* purely bitwise conjuncts always have different keys, so
+/// they can never relate. A relation therefore needs either a `Not`, whose
+/// arithmetic form `-inner - 1` carries a constant key, or a conjunct that is
+/// not purely bitwise at all (a `Scale`, `Add` or `Mul`).
+///
+/// The column enumeration does build `!p` candidates of its own, but such a
+/// `Not` can only serve as the *base*; the multiple it then needs would have to
+/// be a scaled sibling, which is non-bitwise and so already caught here.
+///
+/// This is the admission test for the whole pattern. Without it the proof
+/// search ran ~116k times across the corpus to fire 23 times, all of them on
+/// `loki_tiny`; it discharges every one of those 23 while skipping 100% of the
+/// work on `mba_flatten`, `neureduce` and both `mba_obf_*` sets.
+fn may_relate(term: &Term) -> bool {
+    term.conjuncts
+        .iter()
+        .any(|c| matches!(c, Expr::Not(_)) || !c.is_bitwise())
+}
+
 /// The conjuncts common to `a` and `b`, with multiplicity.
 fn intersect(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
     let mut remaining = b.to_vec();
@@ -324,6 +347,11 @@ impl Pattern for MaskedGroupCollapse {
 
         let parsed: Vec<Option<Term>> = terms.iter().map(as_term).collect();
 
+        // Nothing in this sum can relate, so no group of it can vanish.
+        if !parsed.iter().flatten().any(may_relate) {
+            return None;
+        }
+
         // Conjuncts held by at least two terms are the candidate group pivots.
         let mut occurrences: BTreeMap<&Expr, usize> = BTreeMap::new();
         for term in parsed.iter().flatten() {
@@ -358,6 +386,13 @@ impl Pattern for MaskedGroupCollapse {
                 shared = intersect(&shared, &term.conjuncts);
             }
             if shared.is_empty() {
+                continue;
+            }
+
+            if !group
+                .iter()
+                .any(|&index| parsed[index].as_ref().is_some_and(may_relate))
+            {
                 continue;
             }
 
