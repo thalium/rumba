@@ -75,7 +75,8 @@ impl Experiment {
             };
         };
 
-        if let Err((_, v1, v2)) = simplified_mba.sem_equal(&self.gt, BIT_COUNT, SEMANTIC_TEST_COUNT) {
+        if let Err((_, v1, v2)) = simplified_mba.sem_equal(&self.gt, BIT_COUNT, SEMANTIC_TEST_COUNT)
+        {
             assert_eq!(
                 v1, v2,
                 "{}:{} semantic error mba: {}, gt: {}",
@@ -242,12 +243,24 @@ macro_rules! run_on_dataset {
     };
 }
 
+/// Runs a dataset and fails if the number of unsolved cases (NG) exceeds
+/// `max_ng`. The ceiling is the count observed on `master`; it is an upper
+/// bound, so improvements keep passing and can be ratcheted down, while any
+/// regression that turns a solved case into a failure trips the gate.
 macro_rules! test_dataset {
-    ($name:ident, $filename:literal $(, $attr:meta)?) => {
+    ($name:ident, $filename:literal, max_ng = $max_ng:expr $(, $attr:meta)?) => {
         #[test]
         $(#[$attr])?
         fn $name() {
-            run_on_dataset!($filename);
+            let results = run_on_dataset!($filename);
+            let (_, _, ngs) = count_types(&results);
+            assert!(
+                ngs <= $max_ng,
+                "{}: {} failing cases (NG), baseline ceiling is {}",
+                $filename,
+                ngs,
+                $max_ng,
+            );
         }
     };
 }
@@ -347,19 +360,19 @@ fn discovers_proven_binary_relation_between_hidden_components() {
 mod datasets {
     use super::*;
 
-    test_dataset!(loki_tiny, "loki_tiny.csv");
+    test_dataset!(loki_tiny, "loki_tiny.csv", max_ng = 15);
 
-    test_dataset!(mba_flatten, "mba_flatten.csv");
+    test_dataset!(mba_flatten, "mba_flatten.csv", max_ng = 0);
 
-    test_dataset!(mba_obf_linear, "mba_obf_linear.csv");
+    test_dataset!(mba_obf_linear, "mba_obf_linear.csv", max_ng = 0);
 
-    test_dataset!(mba_obf_nonlinear, "mba_obf_nonlinear.csv");
+    test_dataset!(mba_obf_nonlinear, "mba_obf_nonlinear.csv", max_ng = 0);
 
-    test_dataset!(neureduce, "neureduce.csv");
+    test_dataset!(neureduce, "neureduce.csv", max_ng = 0);
 
-    test_dataset!(qsynth_ea, "qsynth_ea.csv");
+    test_dataset!(qsynth_ea, "qsynth_ea.csv", max_ng = 0);
 
-    test_dataset!(syntia, "syntia.csv");
+    test_dataset!(syntia, "syntia.csv", max_ng = 0);
 
     // #[test]
     // fn test_all() {
