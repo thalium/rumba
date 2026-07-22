@@ -50,6 +50,32 @@ jobs:
       - name: Test C bindings
         run: cargo test -p c --all-features --verbose
 
+  c-bindings:
+    name: c bindings (header + link)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen
+      # The header is committed; fail if it has drifted from the Rust source.
+      - name: Verify the generated header is up to date
+        working-directory: bindings/c
+        run: |
+          cbindgen --config cbindgen.toml --output /tmp/rumba.h
+          diff include/rumba.h /tmp/rumba.h
+      # Compile a C program against the header and link the cdylib, catching
+      # ABI/linkage problems the in-crate Rust tests cannot see.
+      - name: Build the cdylib
+        run: cargo build -p c --all-features
+      - name: Compile, link and run the C smoke test
+        run: |
+          cc bindings/c/csrc/smoke.c -Ibindings/c/include -DDEFINE_RUMBA_PARSE \
+            -Ltarget/debug -lrumbac -o /tmp/smoke
+          LD_LIBRARY_PATH=target/debug /tmp/smoke
+
   python:
     name: python bindings
     runs-on: ubuntu-latest

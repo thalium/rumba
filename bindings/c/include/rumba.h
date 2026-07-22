@@ -73,23 +73,38 @@ void rumba_expr_free(void *ptr);
 /**
  * Performs arithmentic reductions on `ptr` modulo 2^`n`
  * This function takes frees `ptr` and returns a new pointer
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed;
+ * it is consumed by this call.
  */
 void *rumba_expr_reduce(void *ptr, uint8_t n);
 
 /**
  * Simplifies the MBA in `ptr` modulo 2^`n`
  * This function takes frees `ptr` and returns a new pointer
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed;
+ * it is consumed by this call.
  */
 void *rumba_expr_simplify(void *ptr, uint8_t n);
 
 /**
  * Evaluates the epxression `ptr` modulo 2^`n`
  * on the variables in the array `arr` of length `len`
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
+ * `arr` must point to `len` readable `u64` values.
  */
 uint64_t rumba_expr_eval(const void *ptr, uint8_t n, const uint64_t *arr, uintptr_t len);
 
 /**
  * Counts the number of nodes in the expression `ptr`
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
  */
 uintptr_t rumba_expr_size(const void *ptr);
 
@@ -97,11 +112,19 @@ uintptr_t rumba_expr_size(const void *ptr);
  * Returns a string representation of `ptr` modulo 2^`n`
  * `len` is the length of the returned string
  * `flags` RUMBA_EXPR_REPR_FLAG
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
+ * `len`, if non-null, must point to a writable `usize`. The returned string is
+ * owned by the caller and must be freed with the C `free`.
  */
 char *rumba_expr_repr(const void *ptr, uint8_t n, uintptr_t *len, uint8_t flags);
 
 /**
  * Gets the type of the expression `ptr`.
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
  */
 enum RUMBA_EXPR_TYPE rumba_expr_ty(const void *ptr);
 
@@ -109,6 +132,9 @@ enum RUMBA_EXPR_TYPE rumba_expr_ty(const void *ptr);
  * Gets the number of children of this node.
  * This should only be called on expressions of types
  * `And, Or, Xor, Mul, Add, Scale, Not`.
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
  */
 uintptr_t rumba_expr_children_size(const void *ptr);
 
@@ -117,6 +143,10 @@ uintptr_t rumba_expr_children_size(const void *ptr);
  * This should only be called on expressions of types
  * `And, Or, Xor, Mul, Add, Scale, Not`.
  * `idx` should be less than `rumba_expr_children_size`.
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
+ * The returned pointer borrows from `ptr` and must not outlive it.
  */
 const void *rumba_expr_get_child(const void *ptr, uintptr_t idx);
 
@@ -125,18 +155,29 @@ const void *rumba_expr_get_child(const void *ptr, uintptr_t idx);
  * This should only be called on expressions of types
  * `And, Or, Xor, Mul, Add, Scale, Not`.
  * `idx` should be less than `rumba_expr_children_size`.
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
+ * The returned pointer borrows mutably from `ptr` and must not outlive it, and
+ * no other reference to the same node may be used while it is live.
  */
 void *rumba_expr_get_child_mut(void *ptr, uintptr_t idx);
 
 /**
  * Gets the constant of this node.
  * This should only be called on expressions of type `Const`.
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
  */
 uint64_t rumba_expr_get_const(const void *ptr);
 
 /**
  * Gets the variable id of this node.
  * This should only be called on expressions of type `Var`.
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
  */
 uintptr_t rumba_expr_get_var(const void *ptr);
 
@@ -153,53 +194,88 @@ void *rumba_make_var(uintptr_t id);
 /**
  * Create a new NOT expression.
  * `ptr` is freed and a new expression in allocated
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed;
+ * it is consumed by this call.
  */
 void *rumba_expr_bnot(void *ptr);
 
 /**
  * Create a new AND expression.
  * `lhs` and `rhs` are freed and a new expression in allocated
+ *
+ * # Safety
+ * `lhs` and `rhs` must be valid expression handles from the rumba API and not
+ * yet freed; both are consumed by this call.
  */
 void *rumba_expr_band(void *lhs, void *rhs);
 
 /**
  * Create a new XOR expression.
  * `lhs` and `rhs` are freed and a new expression in allocated
+ *
+ * # Safety
+ * `lhs` and `rhs` must be valid expression handles from the rumba API and not
+ * yet freed; both are consumed by this call.
  */
 void *rumba_expr_bxor(void *lhs, void *rhs);
 
 /**
  * Create a new OR expression.
  * `lhs` and `rhs` are freed and a new expression in allocated
+ *
+ * # Safety
+ * `lhs` and `rhs` must be valid expression handles from the rumba API and not
+ * yet freed; both are consumed by this call.
  */
 void *rumba_expr_bor(void *lhs, void *rhs);
 
 /**
  * Create a new ADD expression.
- * `ptr` is freed and a new expression in allocated
+ * `lhs` and `rhs` are freed and a new expression in allocated
+ *
+ * # Safety
+ * `lhs` and `rhs` must be valid expression handles from the rumba API and not
+ * yet freed; both are consumed by this call.
  */
 void *rumba_expr_add(void *lhs, void *rhs);
 
 /**
  * Create a new MUL expression.
- * `ptr` is freed and a new expression in allocated
+ * `lhs` and `rhs` are freed and a new expression in allocated
+ *
+ * # Safety
+ * `lhs` and `rhs` must be valid expression handles from the rumba API and not
+ * yet freed; both are consumed by this call.
  */
 void *rumba_expr_mul(void *lhs, void *rhs);
 
 /**
  * Create a new substraction expression.
- * `ptr` is freed and a new expression in allocated
+ * `lhs` and `rhs` are freed and a new expression in allocated
+ *
+ * # Safety
+ * `lhs` and `rhs` must be valid expression handles from the rumba API and not
+ * yet freed; both are consumed by this call.
  */
 void *rumba_expr_sub(void *lhs, void *rhs);
 
 /**
  * Create a new neg expression.
  * `ptr` is freed and a new expression in allocated
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed;
+ * it is consumed by this call.
  */
 void *rumba_expr_neg(void *ptr);
 
 /**
  * Clones an expression.
+ *
+ * # Safety
+ * `ptr` must be a valid expression handle from the rumba API and not yet freed.
  */
 void *rumba_expr_clone(const void *ptr);
 
@@ -207,6 +283,10 @@ void *rumba_expr_clone(const void *ptr);
 /**
  * Parses an expression from a string into res
  * If an error occurs returns 1
+ *
+ * # Safety
+ * `ptr` must point to a valid, null-terminated C string, and `res` must point
+ * to a writable location for the resulting expression handle.
  */
 uint8_t rumba_expr_parse(const char *ptr, void **res);
 #endif
