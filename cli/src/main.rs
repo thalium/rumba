@@ -1,5 +1,8 @@
 use clap::{Arg, Command, Parser, Subcommand};
-use rumba_core::{parser::parse_expr, simplify::simplify_mba};
+use rumba_core::{
+    parser::parse_expr,
+    simplify::{SimplifyOptions, simplify_mba_with},
+};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -56,10 +59,19 @@ fn main() {
                 .default_value("32")
                 .value_parser(clap::value_parser!(u8)),
         )
+        .arg(
+            Arg::new("no-patterns")
+                .long("no-patterns")
+                .help("Disable the structural pattern-rewrite engine")
+                .action(clap::ArgAction::SetTrue),
+        )
         .get_matches();
 
     let expr = matches.get_one::<String>("expression").unwrap().to_string();
     let bits = *matches.get_one::<u8>("n").unwrap();
+    let options = SimplifyOptions {
+        patterns: !matches.get_flag("no-patterns"),
+    };
 
     let mut hex = false;
     if matches.get_flag("hex") {
@@ -69,7 +81,7 @@ fn main() {
     match parse_expr(&expr) {
         Ok(e) => {
             println!("Simplify {}", e.repr(bits, hex, false));
-            let sol = match simplify_mba(e.clone(), bits) {
+            let sol = match simplify_mba_with(e.clone(), bits, options) {
                 Ok(solution) => solution,
                 Err(error) => {
                     eprintln!("Failed to simplify expression: {error}");

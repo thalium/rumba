@@ -12,9 +12,9 @@ use std::{
 };
 
 use crate::{
+    expr::{Expr, VarId},
     utils::bimap::BiMap,
     utils::cache::LinearCache,
-    expr::{Expr, VarId},
 };
 
 use log::debug;
@@ -188,17 +188,17 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             Expr::Not(inner) => left + *inner + Expr::make_const(1),
             right => left - right,
         };
-        let difference = self.expand_hidden_components(difference).reduce_masked(self.mask);
+        let difference = self
+            .expand_hidden_components(difference)
+            .reduce_masked(self.mask);
         if !passes_quick_zero_check(&difference, self.mask) {
             return false;
         }
 
         HIDDEN_EQUALITY_DEPTH.with(|depth| {
             depth.set(depth.get() + 1);
-            let mut solver = MBASolver::new(self.l_cache, &difference, self.n);
-            let is_zero = solver
-                .solve(difference)
-                .is_ok_and(|e| e == Expr::zero());
+            let mut solver = MBASolver::new(self.l_cache, &difference, self.n, self.options);
+            let is_zero = solver.solve(difference).is_ok_and(|e| e == Expr::zero());
             depth.set(depth.get() - 1);
             is_zero
         })
