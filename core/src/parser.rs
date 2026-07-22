@@ -108,7 +108,9 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr, String> {
             }
         }
 
-        Rule::number | Rule::expr | Rule::atom => build_expr(pair.into_inner().next().unwrap())?,
+        Rule::number | Rule::expr | Rule::expr_eoi | Rule::atom => {
+            build_expr(pair.into_inner().next().unwrap())?
+        }
         _ => unreachable!("unexpected rule: {:?}", pair.as_rule()),
     };
 
@@ -117,7 +119,7 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr, String> {
 
 /// Parses a single MBA expression from its textual form.
 pub fn parse_expr(input: &str) -> Result<Expr, String> {
-    let mut pairs = RumbaParser::parse(Rule::expr, input).map_err(|e| e.to_string())?;
+    let mut pairs = RumbaParser::parse(Rule::expr_eoi, input).map_err(|e| e.to_string())?;
 
     build_expr(pairs.next().unwrap())
 }

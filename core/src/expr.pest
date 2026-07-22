@@ -16,6 +16,11 @@ unknown   = { type ~ var ~ "=" ~ "unknown" ~ "(" ~ unknown_vars? ~ ")" ~ NEWLINE
 // Rumba expressions
 expr = { or }
 
+// Entry point for parsing a standalone expression. `expr` alone matches a
+// prefix, so without the SOI/EOI anchors trailing garbage is silently dropped
+// and a typo parses as a valid subexpression.
+expr_eoi = { SOI ~ expr ~ EOI }
+
 or  = { xor ~ ("|" ~ xor)* }
 xor = { and ~ ("^" ~ and)* }
 and = { add ~ ("&" ~ add)* }
