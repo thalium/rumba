@@ -130,15 +130,6 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         // TODO: Remove this only needs to be done once
         let e = e.reduce_masked(self.mask);
 
-        // Non-polynomial stage: structural pattern rewrites on the canonical
-        // expression, before it is lifted to a polynomial. Skipped when the
-        // caller disables the pattern engine via [`SimplifyOptions`].
-        let e = if self.options.patterns {
-            crate::patterns::apply_patterns(e, self.mask)
-        } else {
-            e
-        };
-
         let p = self.make_polynomial(e)?;
         let p = self.merge_equal_hidden_components(p);
         self.degree = 1;
@@ -146,13 +137,28 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         let p = self.solve_polynomial(p)?;
 
         // This was a non linear MBA
-        if self.non_linear_components.len() != 0 {
+        let e = if self.non_linear_components.len() != 0 {
             let e = self.poly_to_nonpoly(p);
             debug!("After adding non linear components, found: {}", e);
-            Ok(e.reduce_masked(self.mask))
+            e.reduce_masked(self.mask)
         } else {
-            Ok(p)
-        }
+            p
+        };
+
+        // Structural pattern rewrites, applied to the *solved* expression
+        // rather than the raw input. The residues these patterns target are
+        // what the solver leaves behind, and by this point the expression is
+        // a fraction of the size it arrived as — the matchers walk every node
+        // of it, so running them on the obfuscated input is both slower and
+        // less likely to match. A hit changes the expression, so
+        // `simplify_to_fixed_point` runs another pass and the downstream
+        // stages still get to exploit the collapse. Skipped when the caller
+        // disables the pattern engine via [`SimplifyOptions`].
+        Ok(if self.options.patterns {
+            crate::patterns::apply_patterns(e, self.mask)
+        } else {
+            e
+        })
     }
 
     /// Calcluates the signature of a linear MBA
