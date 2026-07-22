@@ -117,7 +117,8 @@ impl Reducer {
     pub fn group_terms(&self, exprs: Vec<Expr>) -> Expr {
         let initial_len = exprs.len();
 
-        let mut map = HashMap::<Expr, u64>::with_capacity_and_hasher(initial_len, Default::default());
+        let mut map =
+            HashMap::<Expr, u64>::with_capacity_and_hasher(initial_len, Default::default());
 
         for e in exprs.into_iter() {
             if let Expr::Scale(c, e) = e {

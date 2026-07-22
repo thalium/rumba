@@ -6,9 +6,7 @@
 //! promising ones exactly, and rewrites the aliased variables so the linear
 //! engine sees a single shared component.
 
-use std::{
-    cell::Cell,
-};
+use std::cell::Cell;
 
 use crate::{
     expr::{Expr, VarId},
