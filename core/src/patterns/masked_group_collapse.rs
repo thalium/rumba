@@ -123,13 +123,33 @@ fn bitwise_signature(e: &Expr, vars: &[VarId], mask: u64) -> Option<Vec<u64>> {
         .then_some(table)
 }
 
+/// The arithmetic form of `e`, rewriting a top-level `~x` as `-x - 1`.
+///
+/// [`scale_relation`] compares additive coefficient maps, and a `Not` node is
+/// opaque to it — so anything fed to it has to be spelled out this way.
+fn arithmetic(e: &Expr, mask: u64) -> Expr {
+    match e {
+        Expr::Not(inner) => (-inner.as_ref().clone() - Expr::make_const(1)).reduce_masked(mask),
+        other => other.clone(),
+    }
+}
+
 /// Whether `⋀ conjuncts` is identically zero.
 ///
-/// The one fact used is the low-bit annihilator `Y & (-Y) & (m·Y) = 0` for even
-/// `m`: `Y & -Y` isolates `Y`'s lowest set bit `2^k`, which an even multiple of
-/// `Y` cannot carry. So the conjunction vanishes whenever it contains `-Y`, an
-/// even multiple of `Y`, and a third conjunct whose bits are contained in `Y`'s
-/// — containment being either an exact match or a proven bitwise submask.
+/// Both facts used turn on the same observation. Write `2^k` for the lowest set
+/// bit of some base `S`; then `m·S` is divisible by `2^k`, so every multiple of
+/// `S` is clear below bit `k` — and an *even* multiple is clear at bit `k` too.
+/// A conjunct that pins down those low bits therefore annihilates the product:
+///
+/// - `-S` gives `S & -S = 2^k`, killed by an even multiple. The witness must
+///   lie inside `S`.
+/// - `~S` gives `(S - 1) & ~S = 2^k - 1`, everything strictly below bit `k`,
+///   killed by *any* multiple. The witness must lie inside `S - 1`.
+///
+/// So the conjunction vanishes whenever it holds one of those two readings of a
+/// base, a suitable multiple of that base, and a third conjunct contained in
+/// the matching bound — containment being an exact match or a proven bitwise
+/// submask.
 ///
 /// Purely bitwise conjuncts are also offered as a single merged witness: the
 /// containment usually only holds for their conjunction, not for any one of
@@ -149,37 +169,59 @@ fn proves_zero(conjuncts: &[Expr], vars: &[VarId], mask: u64) -> bool {
         .map(|c| bitwise_signature(c, vars, mask))
         .collect();
 
-    for (i, negative) in candidates.iter().enumerate() {
-        let base = negated(negative, mask);
-        let base_signature = bitwise_signature(&base, vars, mask);
+    for (i, conjunct) in candidates.iter().enumerate() {
+        // Read this conjunct as `-S`. `reduce` leaves `-1 · ~x` alone, so the
+        // conjunct has to be spelled out arithmetically first or the negation
+        // of a `~x` stays opaque to `scale_relation`.
+        let negation = negated(&arithmetic(conjunct, mask), mask);
+        let mut hypotheses = vec![(negation.clone(), negation, true)];
+        // Then as `~S` — but only when it is literally that. Deriving the
+        // complement arithmetically for every conjunct also works, and costs
+        // two more reductions per candidate; since `proves_zero` runs at every
+        // `Add` node of every expression that measured ~10% on the corpus, and
+        // the residues only ever spell the complement as a `Not`.
+        if let Expr::Not(inner) = conjunct {
+            let base = inner.as_ref().clone();
+            let bound = (base.clone() - Expr::make_const(1)).reduce_masked(mask);
+            hypotheses.push((base, bound, false));
+        }
 
-        for (j, multiple) in candidates.iter().enumerate() {
-            if j == i {
-                continue;
-            }
-            // An even, non-zero multiple of `base`; odd ones keep the low bit.
-            match scale_relation(multiple, &base, mask) {
-                Some(m) if m != 0 && m & 1 == 0 => {}
-                _ => continue,
-            }
+        for (base, bound, needs_even_multiple) in hypotheses {
+            // Most conjuncts have no multiple among their siblings, so hold off
+            // on the bound's signature until one turns up. It costs 2^|vars|
+            // evaluations and this runs at every `Add` node of every expression.
+            let mut bound_signature = None;
 
-            for (k, witness) in candidates.iter().enumerate() {
-                if k == i || k == j {
+            for (j, multiple) in candidates.iter().enumerate() {
+                if j == i {
                     continue;
                 }
-                if scale_relation(witness, &base, mask) == Some(1) {
-                    return true;
+                match scale_relation(multiple, &base, mask) {
+                    Some(m) if m != 0 && (!needs_even_multiple || m & 1 == 0) => {}
+                    _ => continue,
                 }
-                let (Some(witness_bits), Some(base_bits)) = (&signatures[k], &base_signature)
-                else {
-                    continue;
-                };
-                if witness_bits
-                    .iter()
-                    .zip(base_bits)
-                    .all(|(w, b)| w & !b & mask == 0)
-                {
-                    return true;
+                let bound_signature =
+                    bound_signature.get_or_insert_with(|| bitwise_signature(&bound, vars, mask));
+
+                for (k, witness) in candidates.iter().enumerate() {
+                    if k == i || k == j {
+                        continue;
+                    }
+                    if scale_relation(witness, &bound, mask) == Some(1) {
+                        return true;
+                    }
+                    let (Some(witness_bits), Some(bound_bits)) =
+                        (&signatures[k], &*bound_signature)
+                    else {
+                        continue;
+                    };
+                    if witness_bits
+                        .iter()
+                        .zip(bound_bits)
+                        .all(|(w, b)| w & !b & mask == 0)
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -401,6 +443,7 @@ mod ng_probe {
             }
 
             let mut failures = 0;
+            let mut undischarged: Vec<Expr> = Vec::new();
             for column in 0..(1usize << primitives.len()) {
                 let sum = atoms
                     .iter()
@@ -419,6 +462,7 @@ mod ng_probe {
                 }
                 if !proves_zero(&conjuncts, &vars, mask) {
                     failures += 1;
+                    undischarged.push(Expr::And(conjuncts));
                 }
             }
             if failures > 0 {
@@ -426,10 +470,15 @@ mod ng_probe {
                 best = if loose > 0 {
                     format!("loose-terms: {loose} term(s) outside the group")
                 } else {
+                    let goals: Vec<String> = undischarged
+                        .iter()
+                        .map(|g| format!("\n       0 == {g}"))
+                        .collect();
                     format!(
-                        "undischarged-column: {failures} of {} column(s), {} primitive(s)",
+                        "undischarged-column: {failures} of {} column(s), {} primitive(s){}",
                         1usize << primitives.len(),
-                        primitives.len()
+                        primitives.len(),
+                        goals.concat()
                     )
                 };
             }

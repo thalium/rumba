@@ -430,6 +430,53 @@ mod tests {
         assert_eq!(apply_patterns(before, mask), Expr::zero());
     }
 
+    /// The complement reading of the annihilator, as left on
+    /// `loki_tiny.csv:23488`: `(S - 1) & ~S` is everything strictly below `S`'s
+    /// lowest set bit, which *any* multiple of `S` clears — unlike the `-S`
+    /// reading, this one does not need the multiple to be even.
+    #[test]
+    fn masked_group_collapses_on_complement_of_successor() {
+        let mask = make_mask(N);
+        // The last core is `v0 ^ v1` spelled arithmetically, as `reduce` leaves
+        // it in the corpus; an `Xor` node would be distributed into instead.
+        let cores = [
+            var(0),
+            var(0) & var(1),
+            (var(0) + var(1) - 2u64 * (var(0) & var(1))).reduce_masked(mask),
+        ];
+        for core in cores {
+            let s = (core.clone() + Expr::make_const(1)).reduce_masked(mask);
+            for m in [2u64, 3, 4, mask - 1] {
+                let boundary = ((m * s.clone()) & !s.clone()).reduce_masked(mask);
+                let before = ((core.clone() & boundary.clone())
+                    - (core.clone() & var(1) & boundary))
+                    .reduce_masked(mask);
+                assert!(
+                    before.sem_equal_masked(&Expr::zero(), mask, 500).is_ok(),
+                    "m={m} residue is not semantically zero"
+                );
+                assert_eq!(apply_patterns(before, mask), Expr::zero(), "m={m}");
+            }
+        }
+    }
+
+    /// `reduce` leaves `-1 · ~x` alone, so the complement reading only works if
+    /// the conjunct is spelled out arithmetically first. Guards that step.
+    #[test]
+    fn masked_group_sees_through_unreduced_complement() {
+        let mask = make_mask(N);
+        let s =
+            (var(0) + var(1) + Expr::make_const(1) - 2u64 * (var(0) & var(1))).reduce_masked(mask);
+        let conjuncts = vec![
+            ((-2i64 as u64) * s.clone()).reduce_masked(mask),
+            var(0),
+            !var(1),
+            !s,
+        ];
+        let before = (Expr::And(conjuncts.clone()) - Expr::And(conjuncts)).reduce_masked(mask);
+        assert_eq!(apply_patterns(before, mask), Expr::zero());
+    }
+
     /// The same shape with an *odd* multiple: the annihilator does not hold and
     /// the group must survive untouched.
     #[test]
