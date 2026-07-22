@@ -164,10 +164,12 @@ fn proves_zero(conjuncts: &[Expr], vars: &[VarId], mask: u64) -> bool {
     if bitwise.len() >= 2 {
         candidates.push(Expr::And(bitwise));
     }
-    let signatures: Vec<Option<Vec<u64>>> = candidates
-        .iter()
-        .map(|c| bitwise_signature(c, vars, mask))
-        .collect();
+    // Filled on demand: a candidate's signature is only read once a base and a
+    // multiple of it have been found, and most candidates never get that far.
+    // Computing them up front costs 2^|vars| evaluations each at every `Add`
+    // node of every expression, the bulk of it on groups that leave below
+    // without ever reaching the witness loop.
+    let mut signatures: Vec<Option<Option<Vec<u64>>>> = vec![None; candidates.len()];
 
     for (i, conjunct) in candidates.iter().enumerate() {
         // Read this conjunct as `-S`. `reduce` leaves `-1 · ~x` alone, so the
@@ -210,9 +212,13 @@ fn proves_zero(conjuncts: &[Expr], vars: &[VarId], mask: u64) -> bool {
                     if scale_relation(witness, &bound, mask) == Some(1) {
                         return true;
                     }
-                    let (Some(witness_bits), Some(bound_bits)) =
-                        (&signatures[k], &*bound_signature)
-                    else {
+                    if signatures[k].is_none() {
+                        signatures[k] = Some(bitwise_signature(witness, vars, mask));
+                    }
+                    let (Some(witness_bits), Some(bound_bits)) = (
+                        signatures[k].as_ref().expect("just filled"),
+                        &*bound_signature,
+                    ) else {
                         continue;
                     };
                     if witness_bits
