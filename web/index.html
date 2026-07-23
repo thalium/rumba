@@ -225,8 +225,7 @@
 
   <footer>
     Simplification is best-effort: Rumba returns an error or leaves the input
-    untouched rather than guessing. Every result is checked against the input on
-    random assignments before it is shown.
+    untouched rather than guessing.
   </footer>
 </main>
 
@@ -340,7 +339,6 @@ function simplify() {
 
   show(after, {
     state: after === before ? "unchanged" : "simplified",
-    ok: `Checked against the input on ${SAMPLES.toLocaleString()} random assignments at ${bits} bits — all agree.`,
     hint: after === before ? "No simplification found — this is the input, unchanged." : null,
   });
 }
