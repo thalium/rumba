@@ -119,7 +119,12 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr, String> {
 
 /// Parses a single MBA expression from its textual form.
 pub fn parse_expr(input: &str) -> Result<Expr, String> {
-    let mut pairs = RumbaParser::parse(Rule::expr_eoi, input).map_err(|e| e.to_string())?;
+    // A standalone expression is single-line as far as the grammar is concerned:
+    // `WHITESPACE` covers only spaces and tabs (newlines are significant line
+    // terminators in the `program` grammar). Users paste multi-line input, so
+    // treat any newline as ordinary whitespace here.
+    let input = input.replace(['\n', '\r'], " ");
+    let mut pairs = RumbaParser::parse(Rule::expr_eoi, &input).map_err(|e| e.to_string())?;
 
     build_expr(pairs.next().unwrap())
 }

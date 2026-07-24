@@ -114,6 +114,7 @@
     letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 3px 9px;
   }
   .pill.simplified { background: var(--lime); color: #2e3b00; }
+  .pill.canonicalized { background: #ffcf33; color: #4a3600; }
   .pill.unchanged { background: #eeecfa; color: #6a6880; }
   .pill.error { background: rgba(226,61,107,.12); color: var(--bad); }
   .out {
@@ -337,10 +338,27 @@ function simplify() {
     return;
   }
 
-  show(after, {
-    state: after === before ? "unchanged" : "simplified",
-    hint: after === before ? "No simplification found — this is the input, unchanged." : null,
-  });
+  if (after === before) {
+    show(after, {
+      state: "unchanged",
+      hint: "No simplification found — this is the input, unchanged.",
+    });
+    return;
+  }
+
+  // A larger result is not a failure: Rumba re-expresses the input in its
+  // internal basis, and an expression that is already a sub-part of a larger
+  // one can grow when written out alone. Calling that "simplified" would
+  // mislead, so it is flagged as a canonical rewrite instead.
+  if (simplified.size() > expr.size()) {
+    show(after, {
+      state: "canonicalized",
+      hint: "Rumba rewrites expressions in a fixed algebraic basis. This one expands rather than shrinks in that basis — it is likely a sub-part of a larger expression.",
+    });
+    return;
+  }
+
+  show(after, { state: "simplified" });
 }
 
 run.addEventListener("click", simplify);
