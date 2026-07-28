@@ -10,31 +10,38 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --ink: #17161f;
-    --accent: #5b3df5;
-    --accent-dark: #4326d6;
-    --muted: #4a4860;
-    --dim: #8a88a0;
-    --faint: #a8a6bc;
-    --line: #e0ddf0;
-    --ok: #3f8000;
-    --bad: #e23d6b;
-    --lime: #c8f000;
+    --bg: #f1f0f8; --dot: #d9d6ec; --card: #ffffff; --ink: #17161f;
+    --muted: #4a4860; --dim: #8a88a0; --faint: #a8a6bc; --border: #17161f;
+    --line: #e0ddf0; --field: #f7f6fc; --panel: #fbfaff; --accent: #5b3df5;
+    --accent-dark: #4a2fe0; --accent-ink: #ffffff; --pill-bg: #eeecfa;
+    --lime: #c8f000; --lime-ink: #2e3b00; --shadow: rgba(91,61,245,.9);
+    --amber: #ffcf33; --amber-ink: #4a3600; --select: rgba(91,61,245,.18);
+    --ok: #3f8000; --bad: #e23d6b; --bad-bg: rgba(226,61,107,.12);
+  }
+  :root[data-theme="dark"] {
+    --bg: #131120; --dot: #24223c; --card: #1b1930; --ink: #f4f3fb;
+    --muted: #c2c0d8; --dim: #9a98b4; --faint: #6f6d88; --border: #3a374f;
+    --line: #2c2a42; --field: #14131f; --panel: #1f1d36; --accent: #7a5cff;
+    --accent-dark: #8f74ff; --accent-ink: #ffffff; --pill-bg: #2a2748;
+    --lime: #c8f000; --lime-ink: #2e3b00; --shadow: rgba(122,92,255,.55);
+    --amber: #f0b429; --amber-ink: #2b1e00; --select: rgba(122,92,255,.35);
+    --ok: #8fd34a; --bad: #ff5c85; --bad-bg: rgba(255,92,133,.16);
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: #f1f0f8; }
+  html, body { margin: 0; background: var(--bg); }
   body {
     font-family: "Space Grotesk", system-ui, sans-serif;
     color: var(--ink);
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
     padding: 56px 24px 72px;
-    background-color: #f1f0f8;
-    background-image: radial-gradient(#d9d6ec 1.1px, transparent 1.1px);
+    background-color: var(--bg);
+    background-image: radial-gradient(var(--dot) 1.1px, transparent 1.1px);
     background-size: 22px 22px;
+    transition: background-color .25s, color .25s;
   }
   main { max-width: 680px; margin: 0 auto; }
-  ::selection { background: rgba(91,61,245,.18); }
+  ::selection { background: var(--select); }
   a { color: var(--accent); text-decoration: none; }
   a:hover { color: var(--accent-dark); text-decoration: underline; text-underline-offset: 3px; }
   textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -42,7 +49,7 @@
 
   header {
     display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 24px; padding-bottom: 28px; border-bottom: 2px solid var(--ink);
+    gap: 24px; padding-bottom: 28px; border-bottom: 2px solid var(--border);
   }
   .title { display: flex; align-items: center; gap: 12px; }
   h1 { font-weight: 700; font-size: 30px; letter-spacing: -.03em; margin: 0; display: flex; align-items: center; }
@@ -58,17 +65,29 @@
   .badge {
     font-family: "Space Mono", monospace; font-size: 10.5px; font-weight: 700;
     letter-spacing: .08em; text-transform: uppercase; color: var(--accent);
-    background: rgba(91,61,245,.1); border-radius: 999px; padding: 4px 10px;
+    background: var(--pill-bg); border-radius: 999px; padding: 4px 10px;
   }
   .tagline { margin: 14px 0 0; font-size: 14.5px; line-height: 1.6; color: var(--muted); max-width: 60ch; }
+  .head-side {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 12px;
+    flex: none; padding-top: 4px;
+  }
+  .theme-toggle {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: "Space Mono", monospace; font-size: 11px; font-weight: 700;
+    color: var(--ink); background: var(--card); border: 1.5px solid var(--border);
+    border-radius: 999px; padding: 6px 12px; cursor: pointer;
+    box-shadow: 2px 2px 0 var(--border);
+  }
+  .theme-toggle:active { box-shadow: 0 0 0 var(--border); transform: translate(2px, 2px); }
   nav {
     display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
-    flex: none; padding-top: 4px; font-family: "Space Mono", monospace; font-size: 12.5px;
+    font-family: "Space Mono", monospace; font-size: 12.5px;
   }
 
   .card {
-    margin-top: 32px; background: #fff; border: 2px solid var(--ink);
-    border-radius: 16px; box-shadow: 6px 6px 0 rgba(91,61,245,.9); overflow: hidden;
+    margin-top: 32px; background: var(--card); border: 2px solid var(--border);
+    border-radius: 16px; box-shadow: 6px 6px 0 var(--shadow); overflow: hidden;
   }
   .card-body { padding: 22px 22px 20px; }
   .field-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
@@ -80,46 +99,46 @@
   textarea {
     width: 100%; min-height: 96px; resize: vertical; padding: 14px 15px;
     font-family: "Space Mono", monospace; font-size: 14.5px; line-height: 1.55;
-    color: var(--ink); background: #f7f6fc; border: 1.5px solid var(--line); border-radius: 10px;
+    color: var(--ink); background: var(--field); border: 1.5px solid var(--line); border-radius: 10px;
   }
 
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 14px; }
   .run {
     font-family: "Space Grotesk", sans-serif; font-size: 14px; font-weight: 600;
-    color: #fff; background: var(--accent); border: 1.5px solid var(--ink);
-    border-radius: 9px; padding: 9px 20px; cursor: pointer; box-shadow: 2px 2px 0 var(--ink);
+    color: var(--accent-ink); background: var(--accent); border: 1.5px solid var(--border);
+    border-radius: 9px; padding: 9px 20px; cursor: pointer; box-shadow: 2px 2px 0 var(--border);
   }
-  .run:hover:not(:disabled) { background: #4a2fe0; }
-  .run:active:not(:disabled) { box-shadow: 0 0 0 var(--ink); transform: translate(2px, 2px); }
-  .run:disabled { opacity: .45; cursor: default; box-shadow: 2px 2px 0 var(--ink); }
+  .run:hover:not(:disabled) { background: var(--accent-dark); }
+  .run:active:not(:disabled) { box-shadow: 0 0 0 var(--border); transform: translate(2px, 2px); }
+  .run:disabled { opacity: .45; cursor: default; box-shadow: 2px 2px 0 var(--border); }
 
   .bits { display: flex; align-items: center; gap: 8px; }
   .bits-label { font-family: "Space Mono", monospace; font-size: 11px; color: var(--dim); }
   .segmented {
-    display: inline-flex; background: #f2f0fb; border: 1.5px solid var(--line);
+    display: inline-flex; background: var(--field); border: 1.5px solid var(--line);
     border-radius: 9px; padding: 3px; gap: 2px;
   }
   .segmented button {
     font-family: "Space Mono", monospace; font-size: 12px; font-weight: 700;
     border: none; border-radius: 6px; padding: 5px 11px; cursor: pointer;
-    background: transparent; color: #6a6880;
+    background: transparent; color: var(--dim);
   }
-  .segmented button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .segmented button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
   .status { font-family: "Space Mono", monospace; font-size: 11.5px; color: var(--faint); margin-left: auto; }
 
-  .result { border-top: 2px solid var(--ink); background: #fbfaff; padding: 20px 22px 22px; }
+  .result { border-top: 2px solid var(--border); background: var(--panel); padding: 20px 22px 22px; }
   .result-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .pill {
     font-family: "Space Mono", monospace; font-size: 10px; font-weight: 700;
     letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 3px 9px;
   }
-  .pill.simplified { background: var(--lime); color: #2e3b00; }
-  .pill.canonicalized { background: #ffcf33; color: #4a3600; }
-  .pill.unchanged { background: #eeecfa; color: #6a6880; }
-  .pill.error { background: rgba(226,61,107,.12); color: var(--bad); }
+  .pill.simplified { background: var(--lime); color: var(--lime-ink); }
+  .pill.canonicalized { background: var(--amber); color: var(--amber-ink); }
+  .pill.unchanged { background: var(--pill-bg); color: var(--dim); }
+  .pill.error { background: var(--bad-bg); color: var(--bad); }
   .out {
     font-family: "Space Mono", monospace; font-size: 16px; line-height: 1.6;
-    color: var(--ink); background: #fff; border: 1.5px solid var(--ink);
+    color: var(--ink); background: var(--card); border: 1.5px solid var(--border);
     border-radius: 10px; padding: 15px 16px;
     overflow-x: auto; white-space: pre-wrap; word-break: break-word;
   }
@@ -136,10 +155,10 @@
   .examples li { min-width: 0; }
   .examples button {
     display: block; width: 100%; min-width: 0; max-width: 100%; text-align: left;
-    background: #fff; border: 1.5px solid var(--line); border-radius: 11px;
+    background: var(--card); border: 1.5px solid var(--line); border-radius: 11px;
     padding: 12px 14px; cursor: pointer; overflow: hidden;
   }
-  .examples button:hover { border-color: var(--ink); box-shadow: 3px 3px 0 var(--ink); transform: translate(-1px, -1px); }
+  .examples button:hover { border-color: var(--border); box-shadow: 3px 3px 0 var(--border); transform: translate(-1px, -1px); }
   .ex-label { display: block; font-family: "Space Grotesk", sans-serif; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
   .ex-src {
     display: block; font-family: "Space Mono", monospace; font-size: 12.5px;
@@ -154,6 +173,7 @@
   @media (max-width: 560px) {
     body { padding: 32px 16px 56px; }
     header { flex-direction: column; gap: 16px; }
+    .head-side { align-items: flex-start; }
     nav { flex-direction: row; align-items: center; gap: 16px; }
     .status { margin-left: 0; width: 100%; }
   }
@@ -183,10 +203,15 @@
         It compiles to WebAssembly and runs entirely in this tab.
       </p>
     </div>
-    <nav>
-      <a href="https://hal.science/hal-05578742/document">paper ↗</a>
-      <a href="https://github.com/thalium/rumba">source ↗</a>
-    </nav>
+    <div class="head-side">
+      <button class="theme-toggle" id="theme-toggle" type="button" title="Toggle theme" aria-label="Toggle theme">
+        <span id="theme-icon">☾</span> <span id="theme-label">dark</span>
+      </button>
+      <nav>
+        <a href="https://hal.science/hal-05578742/document">paper ↗</a>
+        <a href="https://github.com/thalium/rumba">source ↗</a>
+      </nav>
+    </div>
   </header>
 
   <section class="card">
@@ -238,6 +263,31 @@ const input = $("input"), run = $("run"), status = $("status"), bitsEl = $("bits
 const result = $("result"), output = $("output"), note = $("note");
 const checked = $("checked"), pill = $("pill");
 
+// Theme: persisted in localStorage, defaults to the OS preference. The root
+// element carries data-theme; absence of the attribute means light.
+const themeToggle = $("theme-toggle"), themeIcon = $("theme-icon"), themeLabel = $("theme-label");
+
+function applyTheme(theme) {
+  const dark = theme === "dark";
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  themeIcon.textContent = dark ? "☀" : "☾";
+  themeLabel.textContent = dark ? "light" : "dark";
+}
+
+let theme = "light";
+try {
+  const stored = localStorage.getItem("rumba-theme");
+  if (stored === "dark" || stored === "light") theme = stored;
+  else if (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
+} catch (e) {}
+applyTheme(theme);
+
+themeToggle.addEventListener("click", () => {
+  theme = theme === "dark" ? "light" : "dark";
+  applyTheme(theme);
+  try { localStorage.setItem("rumba-theme", theme); } catch (e) {}
+});
+
 const SAMPLES = 2000;
 const BITS = [8, 16, 32, 64];
 let bits = 64;
@@ -279,9 +329,18 @@ for (const { label, src } of EXAMPLES) {
   b.querySelector(".ex-label").textContent = label;
   b.querySelector(".ex-src").textContent = src;
   b.title = src;
-  b.addEventListener("click", () => { input.value = src; simplify(); });
+  // Loading an example fills the field but leaves it to the user to run —
+  // the result stays hidden until they click Simplify.
+  b.addEventListener("click", () => { input.value = src; clearResult(); input.focus(); });
   li.append(b);
   $("examples").append(li);
+}
+
+// Hide any shown result and reset the "has run" flag. Called both after an
+// example is loaded and whenever the user edits the expression.
+function clearResult() {
+  result.hidden = true;
+  ran = false;
 }
 
 function show(text, { state, ok = null, hint = null }) {
@@ -362,6 +421,8 @@ function simplify() {
 }
 
 run.addEventListener("click", simplify);
+// Editing the expression invalidates whatever result is shown.
+input.addEventListener("input", () => { if (!result.hidden) clearResult(); });
 input.addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   // Shift+Enter would otherwise insert a newline; expressions are single-line.
