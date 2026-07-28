@@ -1,0 +1,59 @@
+name: Pages
+
+# Builds the WebAssembly playground on every PR -- this is the only job that
+# compiles the wasm binding for the wasm target, so it catches core/ changes
+# that break it -- and deploys to GitHub Pages on master.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Allow one deploy at a time; don't cancel a run that is already publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build playground
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      # `parse` is required: without it ExprWasm::parse is cfg'd out and the
+      # page has no way to turn user input into an expression.
+      - name: Build the wasm module
+        working-directory: bindings/wasm
+        env:
+          RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
+        run: wasm-pack build --target web --out-dir ../../web/pkg -- --features parse
+      - uses: actions/configure-pages@v5
+        if: github.ref == 'refs/heads/master'
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/master'
+        with:
+          path: web
+
+  deploy:
+    name: deploy
+    if: github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

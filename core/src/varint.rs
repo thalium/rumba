@@ -21,10 +21,6 @@ impl VarInt {
         self.0 & mask
     }
 
-    pub const fn mask(self, mask: u64) -> Self {
-        Self(self.get(mask))
-    }
-
     pub const fn get_signed(self, n: u8, mask: u64) -> i64 {
         let value = self.get(mask);
         let shift = 64 - n;

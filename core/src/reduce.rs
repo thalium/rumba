@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
-use crate::{expr::Expr, varint::VarInt};
+use crate::{expr::Expr, varint::make_mask};
 
 /// Distributes an expression
 fn distribute<F>(
@@ -97,7 +97,7 @@ impl Reducer {
     {
         let mut flat = Vec::with_capacity(v.len());
 
-        let mut stack: Vec<_> = v.into_iter().map(|e| self.reduce(e)).collect();
+        let mut stack: Vec<_> = v.into_iter().map(|e| self.reduce_masked(e)).collect();
 
         while let Some(e) = stack.pop() {
             match handler(e) {
@@ -117,24 +117,25 @@ impl Reducer {
     pub fn group_terms(&self, exprs: Vec<Expr>) -> Expr {
         let initial_len = exprs.len();
 
-        let mut map = HashMap::<Expr, VarInt>::with_capacity(initial_len);
+        let mut map =
+            HashMap::<Expr, u64>::with_capacity_and_hasher(initial_len, Default::default());
 
         for e in exprs.into_iter() {
             if let Expr::Scale(c, e) = e {
-                let count = map.entry(*e).or_insert(VarInt::ZERO);
-                *count = *count + c;
+                let count = map.entry(*e).or_insert(0);
+                *count = count.wrapping_add(c);
             } else {
-                let count = map.entry(e).or_insert(VarInt::ZERO);
-                *count = *count + VarInt::ONE;
+                let count = map.entry(e).or_insert(0);
+                *count = count.wrapping_add(1);
             }
         }
 
         let mut out = Vec::with_capacity(map.len());
 
         for (e, mut count) in map {
-            count = count.mask(self.mask);
+            count &= self.mask;
 
-            if *count == 0 {
+            if count == 0 {
                 continue;
             }
 
@@ -144,7 +145,7 @@ impl Reducer {
         out.sort();
 
         if initial_len > out.len() {
-            self.reduce(Expr::Add(out))
+            self.reduce_masked(Expr::Add(out))
         } else {
             Expr::Add(out)
         }
@@ -154,35 +155,39 @@ impl Reducer {
     fn reduce_not(&self, expr: Expr) -> Expr {
         match expr {
             // !!x = x
-            Expr::Not(x) => self.reduce(*x),
+            Expr::Not(x) => self.reduce_masked(*x),
 
             Expr::Const(v) => Expr::Const(!v),
 
             // De Morgan's laws
-            Expr::And(exprs) => Expr::Or(exprs.into_iter().map(|e| self.reduce(!e)).collect()),
+            Expr::And(exprs) => {
+                Expr::Or(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect())
+            }
 
             // De Morgan's laws
-            Expr::Or(exprs) => Expr::And(exprs.into_iter().map(|e| self.reduce(!e)).collect()),
+            Expr::Or(exprs) => {
+                Expr::And(exprs.into_iter().map(|e| self.reduce_masked(!e)).collect())
+            }
 
-            _ => !self.reduce(expr),
+            _ => !self.reduce_masked(expr),
         }
     }
 
     /// Reduces a scale node
-    fn reduce_scale(&self, scale: VarInt, expr: Expr) -> Expr {
-        let scale = scale.mask(self.mask);
+    fn reduce_scale(&self, scale: u64, expr: Expr) -> Expr {
+        let scale = scale & self.mask;
 
-        match *scale {
+        match scale {
             0 => Expr::zero(),
 
-            1 => self.reduce(expr),
+            1 => self.reduce_masked(expr),
 
-            _ => match self.reduce(expr) {
-                Expr::Const(c2) => Expr::Const((scale * c2).mask(self.mask)),
+            _ => match self.reduce_masked(expr) {
+                Expr::Const(c2) => Expr::Const(scale.wrapping_mul(c2) & self.mask),
 
                 Expr::Scale(c2, e) => {
-                    let c = (scale * c2).mask(self.mask);
-                    match *c {
+                    let c = scale.wrapping_mul(c2) & self.mask;
+                    match c {
                         0 => Expr::zero(),
                         1 => *e,
                         c => c * *e,
@@ -191,7 +196,7 @@ impl Reducer {
 
                 Expr::Add(sum) => {
                     // TODO: the arith reduce is unnecessary here
-                    self.reduce(Expr::Add(sum.into_iter().map(|e| scale * e).collect()))
+                    self.reduce_masked(Expr::Add(sum.into_iter().map(|e| scale * e).collect()))
                 }
 
                 other => scale * other,
@@ -201,86 +206,86 @@ impl Reducer {
 
     /// Reduces a and node
     fn reduce_and(&self, exprs: Vec<Expr>) -> Expr {
-        let mut c: VarInt = self.mask.into();
+        let mut c: u64 = self.mask;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::And(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c & v;
+                c &= v;
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c == 0 {
+        if c == 0 {
             return Expr::zero();
         }
 
-        if *c != self.mask {
+        if c != self.mask {
             flat.push(Expr::Const(c));
         }
 
         if let Some(distributed) = distribute!(And, Xor, &mut flat) {
-            return self.reduce(distributed);
+            return self.reduce_masked(distributed);
         }
 
         flat = dedupe(flat);
 
         match flat.len() {
-            0 => Expr::Const(VarInt::MAX),
-            1 => flat.pop().unwrap(),
+            0 => Expr::Const(u64::MAX),
+            1 => flat.remove(0),
             _ => Expr::And(flat),
         }
     }
 
     fn reduce_or(&self, exprs: Vec<Expr>) -> Expr {
-        let mut c = VarInt::ZERO;
+        let mut c: u64 = 0;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Or(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c | v;
+                c |= v;
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c != 0 {
+        if c != 0 {
             flat.push(Expr::Const(c));
         }
 
         if let Some(distributed) = distribute!(Or, And, &mut flat) {
-            return self.reduce(distributed);
+            return self.reduce_masked(distributed);
         }
 
         flat = dedupe(flat);
 
         match flat.len() {
             0 => Expr::zero(),
-            1 => flat.pop().unwrap(),
+            1 => flat.remove(0),
             _ => Expr::Or(flat),
         }
     }
 
     fn reduce_xor(&self, exprs: Vec<Expr>) -> Expr {
-        let mut c = VarInt::ZERO;
+        let mut c: u64 = 0;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Xor(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c ^ v;
+                c ^= v;
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c != 0 {
+        if c != 0 {
             flat.push(Expr::Const(c));
         }
 
@@ -288,7 +293,7 @@ impl Reducer {
 
         match flat.len() {
             0 => Expr::zero(),
-            1 => flat.pop().unwrap(),
+            1 => flat.remove(0),
             _ => Expr::Xor(flat),
         }
     }
@@ -299,26 +304,26 @@ impl Reducer {
             return self.reduce_xor(exprs);
         }
 
-        let mut c = VarInt::ZERO;
+        let mut c: u64 = 0;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Add(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c + v;
+                c = c.wrapping_add(v);
                 FlattenResult::None
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c != 0 {
+        if c != 0 {
             flat.push(Expr::Const(c));
         }
 
         match flat.len() {
             0 => Expr::zero(),
-            1 => flat.pop().unwrap(),
+            1 => flat.remove(0),
             _ => self.group_terms(flat),
         }
     }
@@ -329,45 +334,45 @@ impl Reducer {
             return self.reduce_and(exprs);
         }
 
-        let mut c = VarInt::ONE;
+        let mut c: u64 = 1;
 
         let mut flat = self.flatten(exprs, |e| match e {
             Expr::Mul(v) => FlattenResult::Vec(v),
             Expr::Const(v) => {
-                c = c * v;
+                c = c.wrapping_mul(v);
                 FlattenResult::None
             }
             Expr::Scale(s, v) => {
-                c = c * s;
+                c = c.wrapping_mul(s);
                 FlattenResult::Expr(*v)
             }
             _ => FlattenResult::Expr(e),
         });
 
-        c = c.mask(self.mask);
+        c &= self.mask;
 
-        if *c == 0 {
+        if c == 0 {
             return Expr::zero();
         }
 
         if let Some(distributed) = distribute!(Mul, Add, &mut flat) {
-            return self.reduce(Expr::scale(c, distributed));
+            return self.reduce_masked(Expr::scale(c, distributed));
         }
 
         flat.sort();
 
         match flat.len() {
             0 => Expr::Const(c),
-            1 => Expr::scale(c, flat.pop().unwrap()),
+            1 => Expr::scale(c, flat.remove(0)),
             _ => Expr::scale(c, Expr::Mul(flat)),
         }
     }
 
-    fn reduce(&self, expr: Expr) -> Expr {
+    fn reduce_masked(&self, expr: Expr) -> Expr {
         match expr {
             Expr::Var(_) => expr,
 
-            Expr::Const(c) => Expr::Const(c.mask(self.mask)),
+            Expr::Const(c) => Expr::Const(c & self.mask),
 
             Expr::Not(expr) => self.reduce_not(*expr),
 
@@ -389,7 +394,7 @@ impl Reducer {
     //     let old = expr.clone();
     //     let res = self.reduce_(expr);
 
-    //     if let Err((v, v1, v2)) = old.sem_equal(&res, self.mask, 500) {
+    //     if let Err((v, v1, v2)) = old.sem_equal_masked(&res, self.mask, 500) {
     //         println!("Semantic error {} vs {}", old, res);
     //         println!("Semantic error {} vs {}", v1, v2);
     //         println!("{}\n\n", old.symbol(false));
@@ -399,7 +404,13 @@ impl Reducer {
 }
 
 impl Expr {
-    pub fn reduce(self, mask: u64) -> Self {
-        Reducer { mask }.reduce(self)
+    pub(crate) fn reduce_masked(self, mask: u64) -> Self {
+        Reducer { mask }.reduce_masked(self)
+    }
+
+    /// Canonicalizes the expression on `n` bits (constant folding, flattening
+    /// and normalization), without attempting MBA simplification.
+    pub fn reduce(self, n: u8) -> Self {
+        self.reduce_masked(make_mask(n))
     }
 }

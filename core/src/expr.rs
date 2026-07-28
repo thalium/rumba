@@ -1,18 +1,19 @@
 use std::{
     cmp::max,
-    collections::HashSet,
     fmt::{self, Display},
     ops::{Add, BitAnd, BitOr, BitXor, Mul, Neg, Not, Sub},
     vec,
 };
 
 use rand::random_range;
+use rustc_hash::FxHashSet as HashSet;
 
-use crate::varint::VarInt;
+use crate::varint::{VarInt, make_mask};
 
 #[cfg(feature = "jit")]
 use crate::jit;
 
+/// Identifies a variable within an [`Expr`] by its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VarId(pub usize);
 
@@ -28,23 +29,33 @@ impl From<usize> for VarId {
     }
 }
 
+/// A Mixed Boolean-Arithmetic expression tree.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Expr {
+    /// A variable, referenced by its [`VarId`].
     Var(VarId),
 
-    Const(VarInt),
+    /// A constant value.
+    Const(u64),
 
     // Unary
+    /// Bitwise complement (`~e`).
     Not(Box<Expr>),
-    Scale(VarInt, Box<Expr>),
+    /// Multiplication of an expression by a constant coefficient.
+    Scale(u64, Box<Expr>),
 
     // Bitwise
+    /// Bitwise AND of all operands.
     And(Vec<Expr>),
+    /// Bitwise OR of all operands.
     Or(Vec<Expr>),
+    /// Bitwise XOR of all operands.
     Xor(Vec<Expr>),
 
     // Arithmetic
+    /// Arithmetic sum of all operands.
     Add(Vec<Expr>),
+    /// Arithmetic product of all operands.
     Mul(Vec<Expr>),
 }
 
@@ -108,27 +119,7 @@ impl Mul<Expr> for u64 {
     type Output = Expr;
 
     fn mul(self, rhs: Expr) -> Self::Output {
-        if self == 0 {
-            Expr::Const(VarInt::ZERO)
-        } else if self == 1 {
-            rhs
-        } else {
-            Expr::Scale(self.into(), Box::new(rhs))
-        }
-    }
-}
-
-impl Mul<Expr> for VarInt {
-    type Output = Expr;
-
-    fn mul(self, rhs: Expr) -> Self::Output {
-        if self == VarInt::ZERO {
-            Expr::Const(self)
-        } else if self == VarInt::ONE {
-            rhs
-        } else {
-            Expr::Scale(self, Box::new(rhs))
-        }
+        Expr::scale(self, rhs)
     }
 }
 
@@ -136,39 +127,65 @@ impl Neg for Expr {
     type Output = Expr;
 
     fn neg(self) -> Self::Output {
-        Expr::Scale(VarInt::MAX, Box::new(self))
+        Expr::Scale(u64::MAX, Box::new(self))
     }
 }
-
-pub type TruthTable = [u64; 256 * 256];
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.repr(64, u64::MAX, true, false))
+        f.write_str(&self.repr_masked(64, u64::MAX, true, false))
     }
 }
 
-impl From<VarInt> for Expr {
-    fn from(value: VarInt) -> Self {
+impl From<u64> for Expr {
+    fn from(value: u64) -> Self {
         Expr::Const(value)
     }
 }
 
 impl Expr {
+    /// Builds a constant expression from `c`.
     pub fn make_const(c: u64) -> Self {
-        Expr::Const(c.into())
+        Expr::Const(c)
     }
 
     /// An null expression
     pub const fn zero() -> Self {
-        Expr::Const(VarInt::ZERO)
+        Expr::Const(0)
     }
 
-    pub fn scale(c: VarInt, e: Expr) -> Expr {
+    pub(crate) fn scale(c: u64, e: Expr) -> Expr {
         match c {
-            VarInt::ZERO => Expr::zero(),
-            VarInt::ONE => e,
+            0 => Expr::zero(),
+            1 => e,
             _ => Expr::Scale(c, Box::new(e)),
+        }
+    }
+
+    /// The common scalar factor of a linear term: `c` for `Scale(c, _)`, and the
+    /// shared `c` for an `Add` whose terms are all `Scale(c, _)` (a bare term
+    /// counts as `c = 1`); `1` otherwise.
+    ///
+    /// `reduce` distributes a scalar over a sum, so `2·(x + y)` is stored as
+    /// `2·x + 2·y`; this recovers the `2` that is no longer syntactically
+    /// present, letting callers see `x + y`, `2·x + 2·y` and `-x - y` as scalar
+    /// multiples of the same core.
+    pub(crate) fn get_factor(&self, mask: u64) -> u64 {
+        let term_factor = |t: &Expr| match t {
+            Expr::Scale(c, _) => c & mask,
+            _ => 1,
+        };
+        match self {
+            Expr::Scale(c, _) => c & mask,
+            Expr::Add(terms) => {
+                let f = term_factor(&terms[0]);
+                if terms.iter().all(|t| term_factor(t) == f) {
+                    f
+                } else {
+                    1
+                }
+            }
+            _ => 1,
         }
     }
 
@@ -190,47 +207,70 @@ impl Expr {
     }
 
     /// Evaluates the expression with the given variable values
-    pub fn eval(&self, vars: &[u64]) -> VarInt {
+    pub(crate) fn eval_bits(&self, vars: &[u64]) -> VarInt {
         match self {
             Expr::Var(i) => vars[i.0].into(),
 
-            Expr::Const(c) => *c,
+            Expr::Const(c) => (*c).into(),
 
             Expr::And(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::MAX, |x, y| x & y),
 
             Expr::Or(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ZERO, |x, y| x | y),
 
             Expr::Xor(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ZERO, |x, y| x ^ y),
 
             Expr::Add(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ZERO, |x, y| x + y),
 
             Expr::Mul(exprs) => exprs
                 .iter()
-                .map(|e| e.eval(vars))
+                .map(|e| e.eval_bits(vars))
                 .fold(VarInt::ONE, |x, y| x * y),
 
-            Expr::Scale(v, e) => *v * e.eval(vars),
+            Expr::Scale(v, e) => VarInt::from(*v) * e.eval_bits(vars),
 
-            Expr::Not(e) => !e.eval(vars),
+            Expr::Not(e) => !e.eval_bits(vars),
         }
+    }
+
+    /// Evaluates the expression for the given variable values on `n` bits.
+    pub fn eval(&self, vars: &[u64], n: u8) -> u64 {
+        self.eval_bits(vars).get(make_mask(n))
+    }
+
+    /// Checks, by random sampling on `n` bits, whether two expressions are
+    /// semantically equal. On a counterexample returns the sampled variable
+    /// values and the two differing evaluations.
+    pub fn sem_equal(
+        &self,
+        other: &Expr,
+        n: u8,
+        samples: usize,
+    ) -> Result<(), (Vec<u64>, u64, u64)> {
+        self.sem_equal_masked(other, make_mask(n), samples)
+    }
+
+    /// The truth table of this expression over its first `t` variables on `n`
+    /// bits (one entry per assignment of the `t` variables to 0/1).
+    pub fn truth_table(&self, t: usize, n: u8) -> Vec<u64> {
+        self.truth_table_masked(t, make_mask(n))
     }
 
     /// Checks if two expressions are semantically equal
     /// In case of error returns the variables that caused the error
     /// as well as the evaluations of self and other
-    pub fn sem_equal(
+    pub(crate) fn sem_equal_masked(
         &self,
         other: &Expr,
         mask: u64,
@@ -255,8 +295,8 @@ impl Expr {
         for _ in 0..count {
             let vars: Vec<_> = (0..=t).map(|_| random_range(0..=mask)).collect();
 
-            let v1 = self.eval(&vars).get(mask);
-            let v2 = other.eval(&vars).get(mask);
+            let v1 = self.eval_bits(&vars).get(mask);
+            let v2 = other.eval_bits(&vars).get(mask);
 
             if v1 != v2 {
                 return Err((vars, v1, v2));
@@ -267,7 +307,7 @@ impl Expr {
     }
 
     /// Calculates the truth table of an expression on n values with t variables
-    pub fn truth_table(&self, t: usize, mask: u64) -> Vec<u64> {
+    pub(crate) fn truth_table_masked(&self, t: usize, mask: u64) -> Vec<u64> {
         // if t > 20 {
         //     panic!("CRAZYY");
         // }
@@ -306,14 +346,14 @@ impl Expr {
 
         for i in 0..size {
             vars_from_i(i, &mut vars);
-            tt.push(self.eval(&vars).get(mask));
+            tt.push(self.eval_bits(&vars).get(mask));
         }
 
         tt
     }
 
     /// Calls a function recursively on each node of an expression
-    pub fn visit<T, F>(&self, mut f: F) -> T
+    pub(crate) fn visit<T, F>(&self, mut f: F) -> T
     where
         F: FnMut(&Expr, Vec<T>) -> T + Clone,
     {
@@ -351,6 +391,15 @@ impl Expr {
     // https://en.cppreference.com/w/c/language/operator_precedence.html
     fn precedence(&self) -> usize {
         match self {
+            // A single-element collection is semantically its sole child, so it
+            // binds exactly as tightly (see also `repr_masked`, which renders
+            // straight through it).
+            Expr::And(e) | Expr::Or(e) | Expr::Xor(e) | Expr::Add(e) | Expr::Mul(e)
+                if e.len() == 1 =>
+            {
+                e[0].precedence()
+            }
+
             Expr::Var(_) | Expr::Const(_) => 0,
 
             Expr::Not(_) => 2,
@@ -369,14 +418,17 @@ impl Expr {
 
     /// Parenthesizes an expression if needed
     fn parenthesize(&self, parent: &Expr, s: String) -> String {
-        if parent.precedence() <= self.precedence() {
+        // Strict `<`: every operator here is flat and associative/commutative,
+        // so a same-precedence child never needs grouping. This also drops the
+        // cosmetic parens around a degenerate single-child node (e.g. `(v1)`).
+        if parent.precedence() < self.precedence() {
             format!("({})", s)
         } else {
             s
         }
     }
 
-    pub fn symbol(&self, latex: bool) -> &str {
+    pub(crate) fn symbol(&self, latex: bool) -> &str {
         match (self, latex) {
             (Expr::Var(_), _) | (Expr::Const(_), _) => "",
 
@@ -403,8 +455,8 @@ impl Expr {
     }
 
     /// A string representation of this expression
-    pub fn repr(&self, n: u8, mask: u64, hex: bool, latex: bool) -> String {
-        let recurs = |e: &Expr| e.parenthesize(self, e.repr(n, mask, hex, latex));
+    pub(crate) fn repr_masked(&self, n: u8, mask: u64, hex: bool, latex: bool) -> String {
+        let recurs = |e: &Expr| e.parenthesize(self, e.repr_masked(n, mask, hex, latex));
 
         let join = |exprs: &Vec<Expr>, c: &str| {
             exprs
@@ -415,6 +467,14 @@ impl Expr {
                 .to_string()
         };
 
+        // A single-element collection node is just its child; render through it
+        // so no spurious `(v1)` wrapper appears.
+        if let Expr::And(e) | Expr::Or(e) | Expr::Xor(e) | Expr::Add(e) | Expr::Mul(e) = self
+            && e.len() == 1
+        {
+            return e[0].repr_masked(n, mask, hex, latex);
+        }
+
         match self {
             Expr::Var(v) => {
                 if latex {
@@ -424,11 +484,11 @@ impl Expr {
                 }
             }
 
-            Expr::Const(c) => c.repr(n, mask, hex, latex),
+            Expr::Const(c) => VarInt::from(*c).repr(n, mask, hex, latex),
 
             Expr::Scale(c, expr) => format!(
                 "{} {} {}",
-                c.repr(n, mask, hex, latex),
+                VarInt::from(*c).repr(n, mask, hex, latex),
                 self.symbol(latex),
                 recurs(expr)
             ),
@@ -437,20 +497,64 @@ impl Expr {
                 format!("{} {}", self.symbol(latex), recurs(expr))
             }
 
-            Expr::And(exprs)
-            | Expr::Or(exprs)
-            | Expr::Xor(exprs)
-            | Expr::Add(exprs)
-            | Expr::Mul(exprs) => join(exprs, &format!(" {} ", self.symbol(latex))),
+            Expr::Add(exprs) => {
+                let star = if latex { "\\cdot" } else { "*" };
+                let sign_bit = 1u64 << (n - 1);
+
+                // Splits a term into (is_negative, magnitude). A negative
+                // constant or a `Scale` with a negative coefficient is folded
+                // into a subtraction so the sum reads `a - b` rather than
+                // `a + (-b)`. Everything else keeps its normal, unsigned repr.
+                let term = |e: &Expr| -> (bool, String) {
+                    match e {
+                        Expr::Const(c) if c & mask & sign_bit != 0 => {
+                            let m = VarInt::from(c.wrapping_neg());
+                            (true, m.repr(n, mask, hex, latex))
+                        }
+                        Expr::Scale(c, inner) if c & mask & sign_bit != 0 => {
+                            let m = c.wrapping_neg() & mask;
+                            // The magnitude sits in a product context, so the
+                            // inner expression is parenthesized against `Mul`.
+                            let is = inner.parenthesize(
+                                &Expr::Mul(vec![]),
+                                inner.repr_masked(n, mask, hex, latex),
+                            );
+                            if m == 1 {
+                                (true, is)
+                            } else {
+                                let cs = VarInt::from(m).repr(n, mask, hex, latex);
+                                (true, format!("{cs} {star} {is}"))
+                            }
+                        }
+                        _ => (false, recurs(e)),
+                    }
+                };
+
+                let mut out = String::new();
+                for (i, e) in exprs.iter().enumerate() {
+                    let (neg, s) = term(e);
+                    if i == 0 {
+                        out.push_str(&if neg { format!("-{s}") } else { s });
+                    } else {
+                        out.push_str(if neg { " - " } else { " + " });
+                        out.push_str(&s);
+                    }
+                }
+                out
+            }
+
+            Expr::And(exprs) | Expr::Or(exprs) | Expr::Xor(exprs) | Expr::Mul(exprs) => {
+                join(exprs, &format!(" {} ", self.symbol(latex)))
+            }
         }
     }
 
-    // Is this a constant
-    pub fn is_constant(&self) -> bool {
-        matches!(self, Expr::Const(_))
+    /// A string representation of this expression on `n` bits.
+    pub fn repr(&self, n: u8, hex: bool, latex: bool) -> String {
+        self.repr_masked(n, make_mask(n), hex, latex)
     }
 
-    // Is this a bitwise expression
+    /// Whether this expression is purely bitwise (no arithmetic operators).
     pub fn is_bitwise(&self) -> bool {
         match self {
             Expr::Var(_) => true,
@@ -465,7 +569,7 @@ impl Expr {
         }
     }
 
-    // Are all variables in the given set
+    /// Whether every variable in this expression is contained in `allowed_vars`.
     pub fn variables_in(&self, allowed_vars: &Vec<usize>) -> bool {
         match self {
             Expr::Const(_) => true,
@@ -483,28 +587,15 @@ impl Expr {
     }
 
     // Replaces a given var with another expression
-    pub fn replace_var(self, target_var: VarId, replacement: &Expr) -> Self {
+    pub(crate) fn replace_var(self, target_var: VarId, replacement: &Expr) -> Self {
         match self {
             Expr::Var(v) if v == target_var => replacement.clone(),
             _ => self.map(|e| e.replace_var(target_var, replacement)),
         }
     }
 
-    /// Is the outer most expression a boolean expression
-    pub fn is_bool(&self) -> bool {
-        matches!(
-            self,
-            Expr::Not(_) | Expr::And(_) | Expr::Or(_) | Expr::Xor(_)
-        )
-    }
-
-    /// Is the outer most expression an arithmetic expression
-    pub fn is_arithmetic(&self) -> bool {
-        matches!(self, Expr::Add(_) | Expr::Mul(_) | Expr::Scale(_, _))
-    }
-
     // Helper recusive function that needs a reference
-    pub fn map<F>(self, mut f: F) -> Self
+    pub(crate) fn map<F>(self, mut f: F) -> Self
     where
         F: FnMut(Self) -> Self,
     {
@@ -528,7 +619,7 @@ impl Expr {
     /// children, short-circuiting on the first error. Lets the solver's
     /// recursive rewrites return `Result` without hand-rolling the match at
     /// each site.
-    pub fn try_map<F, E>(self, mut f: F) -> Result<Self, E>
+    pub(crate) fn try_map<F, E>(self, mut f: F) -> Result<Self, E>
     where
         F: FnMut(Self) -> Result<Self, E>,
     {

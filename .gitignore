@@ -5,3 +5,11 @@ build
 *.csv
 out
 out.txt
+/ng
+/.serena
+/target/
+Cargo.lock.orig
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/web/pkg

@@ -4,11 +4,17 @@ build:
 release:
     cargo build --release --all-features
 
-wasm:
-    cd bindings/wasm && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack build --target web
+# Build the wasm module into bindings/wasm/pkg
+wasm: (_wasm-into "pkg")
 
-wasm-dev:
-    cd bindings/wasm && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack build --target web --dev --out-dir ../../mba-sandbox/src/wasm
+# Build the playground and serve it at http://localhost:8000
+serve: (_wasm-into "../../web/pkg")
+    python3 -m http.server --directory web 8000
+
+# `parse` is required: without it ExprWasm::parse is cfg'd out and the
+# playground has no way to turn user input into an expression.
+_wasm-into out:
+    cd bindings/wasm && RUSTFLAGS='--cfg getrandom_backend="wasm_js"' wasm-pack build --target web --out-dir {{out}} --features parse
 
 python:
     cd bindings/python && maturin develop --uv --features "jit parse" --release
@@ -18,6 +24,11 @@ rumba *ARGS:
 
 test:
     cargo test datasets --release --all-features -- --nocapture
+
+# The dataset gate with the pattern engine disabled, to score its cost/benefit.
+# Trips the loki_tiny NG gate by design -- the printed RESULTS are the point.
+test-nopatterns:
+    RUMBA_PATTERNS=0 cargo test datasets --release --all-features -- --nocapture
 
 all-test:
     cargo test --all-features -- --nocapture

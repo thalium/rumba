@@ -1,223 +1,27 @@
-use std::{
-    cell::{Cell, RefCell},
-    cmp::max,
-    collections::HashMap,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::cmp::max;
 
 use crate::{
-    bimap::BiMap,
     expr::{Expr, VarId},
-    varint::{VarInt, make_mask},
+    prettify::prettify,
+    utils::bimap::BiMap,
+    utils::cache::{LinearCache, LocalCache, MbaCache},
+    varint::make_mask,
 };
 
 use log::debug;
 
+pub use crate::utils::error::SolveError;
+
+mod lambda;
+mod merge_hidden;
+
+use lambda::{find_lambda_int, find_two_lambdas_int};
+
 /// The largest number of variables a linear MBA may carry into the truth-table
 /// solve. The signature is `2^t` wide, so this bounds one solve at 1M entries.
-pub const MAX_VARS: usize = 20;
+pub(crate) const MAX_VARS: usize = 20;
 
-/// Why the solver could not simplify an expression.
-///
-/// Simplifying an MBA is best-effort: a caller that hands over an expression the
-/// solver cannot handle should be able to keep its original expression and carry
-/// on, not die. Every variant is a "leave this one alone" signal rather than a
-/// reason to abort the program.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SolveError {
-    /// The linear MBA still held more than [`MAX_VARS`] variables after
-    /// reduction / PCT expansion, so its truth table is too large to build.
-    TooManyVariables { found: usize, max: usize },
-
-    /// A variable produced during reduction had no entry in the restore map.
-    /// Indicates an inconsistent variable map rather than a hard input.
-    UnknownVariable(VarId),
-
-    /// A solved linear MBA came back in a shape the polynomial reconstruction
-    /// does not model.
-    UnrecognizedForm(Expr),
-}
-
-impl std::fmt::Display for SolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SolveError::TooManyVariables { found, max } => {
-                write!(f, "too many variables: {found} (max {max})")
-            }
-            SolveError::UnknownVariable(v) => write!(f, "unknown variable v{v}"),
-            SolveError::UnrecognizedForm(e) => {
-                write!(f, "solved linear MBA is in an unrecognized form: {e}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for SolveError {}
-
-/// How a cache has performed. Read with [`MbaCache::stats`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CacheStats {
-    pub hits: u64,
-    pub misses: u64,
-    /// Distinct linear MBAs currently memoized.
-    pub entries: usize,
-}
-
-impl CacheStats {
-    /// Fraction of lookups served from the cache, or `None` before any lookup.
-    pub fn hit_rate(&self) -> Option<f64> {
-        let total = self.hits + self.misses;
-        (total > 0).then(|| self.hits as f64 / total as f64)
-    }
-}
-
-/// A memo of solved linear MBAs.
-///
-/// The solver reaches its cache at exactly one point
-/// ([`MBASolver::solve_linear`]): a [`get`](LinearCache::get), and on a miss an
-/// [`insert`](LinearCache::insert), with the expensive solve running *between*
-/// them. Two implementations are provided: [`LocalCache`] for a single-threaded
-/// caller, and [`MbaCache`] for one shared across threads.
-///
-/// [`get`](LinearCache::get) hands back an owned `Expr` rather than a guard or a
-/// borrow. That is deliberate: the solver recurses into itself (`hide_in_var`
-/// re-enters `simplify_mba_inner` with this same cache), and neither [`RefCell`]
-/// nor [`Mutex`] tolerates a live guard across such a call — one panics, the
-/// other deadlocks. Returning owned values makes that unrepresentable.
-pub trait LinearCache {
-    /// The memoized solution for `e`, tallying the lookup as a hit or a miss.
-    fn get(&self, e: &Expr) -> Option<Expr>;
-
-    /// Memoize `solved` as the solution for `e`.
-    fn insert(&self, e: Expr, solved: Expr);
-
-    /// Hit/miss tallies and current size.
-    fn stats(&self) -> CacheStats;
-
-    /// Drop every entry and reset the tallies.
-    fn clear(&self);
-}
-
-/// A [`LinearCache`] for one thread: no locking, no atomics.
-///
-/// This is what [`simplify_mba`] uses. Accessing it costs a borrow-flag check,
-/// so a single-threaded caller pays nothing for a sharing capability it does not
-/// use. Not [`Sync`] — use [`MbaCache`] to share one across threads.
-#[derive(Debug, Default)]
-pub struct LocalCache {
-    entries: RefCell<HashMap<Expr, Expr>>,
-    hits: Cell<u64>,
-    misses: Cell<u64>,
-}
-
-impl LocalCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl LinearCache for LocalCache {
-    fn get(&self, e: &Expr) -> Option<Expr> {
-        let hit = self.entries.borrow().get(e).cloned();
-
-        let counter = match &hit {
-            Some(_) => &self.hits,
-            None => &self.misses,
-        };
-        counter.set(counter.get() + 1);
-
-        hit
-    }
-
-    fn insert(&self, e: Expr, solved: Expr) {
-        self.entries.borrow_mut().insert(e, solved);
-    }
-
-    fn stats(&self) -> CacheStats {
-        CacheStats {
-            hits: self.hits.get(),
-            misses: self.misses.get(),
-            entries: self.entries.borrow().len(),
-        }
-    }
-
-    fn clear(&self) {
-        self.entries.borrow_mut().clear();
-        self.hits.set(0);
-        self.misses.set(0);
-    }
-}
-
-/// A [`LinearCache`] shareable across threads, and across calls to
-/// [`simplify_mba_with_cache`].
-///
-/// Critical sections are one hash-map operation each — the solve itself runs
-/// outside the lock — so contention stays low even with many workers.
-///
-/// A caller that never shares should still prefer [`LocalCache`]. The lock and
-/// the atomics add roughly 35ns per lookup (~99ns to ~134ns, `benches/cache.rs`).
-/// Against a miss, which pays for a full solve, that is nothing; against a hit,
-/// which is only an `Expr` hash, it is about a third — and a cache exists to be
-/// hit. Measured end to end through the solver the difference came out near 8%
-/// on an all-hits workload.
-#[derive(Debug, Default)]
-pub struct MbaCache {
-    entries: Mutex<HashMap<Expr, Expr>>,
-    hits: AtomicU64,
-    misses: AtomicU64,
-}
-
-impl MbaCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl LinearCache for MbaCache {
-    fn get(&self, e: &Expr) -> Option<Expr> {
-        let hit = self
-            .entries
-            .lock()
-            .expect("MBA cache mutex poisoned")
-            .get(e)
-            .cloned();
-
-        match &hit {
-            Some(_) => &self.hits,
-            None => &self.misses,
-        }
-        .fetch_add(1, Ordering::Relaxed);
-
-        hit
-    }
-
-    fn insert(&self, e: Expr, solved: Expr) {
-        self.entries
-            .lock()
-            .expect("MBA cache mutex poisoned")
-            .insert(e, solved);
-    }
-
-    fn stats(&self) -> CacheStats {
-        CacheStats {
-            hits: self.hits.load(Ordering::Relaxed),
-            misses: self.misses.load(Ordering::Relaxed),
-            entries: self.entries.lock().expect("MBA cache mutex poisoned").len(),
-        }
-    }
-
-    fn clear(&self) {
-        self.entries
-            .lock()
-            .expect("MBA cache mutex poisoned")
-            .clear();
-        self.hits.store(0, Ordering::Relaxed);
-        self.misses.store(0, Ordering::Relaxed);
-    }
-}
+const MAX_SIMPLIFICATION_PASSES: usize = 8;
 
 fn sub_coeff(tt: &mut [u64], coeff: u64, index: usize, sublist: &[usize]) {
     let are_vars_true = |i: usize| sublist[1..].iter().copied().all(|v| ((i >> v) & 1) == 1);
@@ -233,82 +37,6 @@ fn sub_coeff(tt: &mut [u64], coeff: u64, index: usize, sublist: &[usize]) {
             }
         }
         start += period;
-    }
-}
-
-fn get_signed(x: u64, n: u8) -> i64 {
-    let value = x & make_mask(n);
-    let shift = 64 - n;
-    ((value << shift) as i64) >> shift // arithmetic shift
-}
-
-fn find_lambda_int(x: &[u64], y: &[u64], a: i64, b: i64, n: u8) -> Option<u64> {
-    let mut valid: Option<(Option<i64>, Option<i64>)> = None;
-
-    for (&xi, &yi) in x.iter().zip(y.iter()) {
-        let xi = get_signed(xi, n);
-        let yi = get_signed(yi, n);
-
-        if yi == 0 {
-            if xi == a || xi == b {
-                continue;
-            } else {
-                return None;
-            }
-        }
-
-        let mut vals = [None, None];
-
-        if (xi.wrapping_sub(a)) % yi == 0 {
-            vals[0] = Some((xi.wrapping_sub(a)) / yi);
-        }
-
-        if (xi.wrapping_sub(b)) % yi == 0 {
-            vals[1] = Some((xi.wrapping_sub(b)) / yi);
-        }
-
-        match valid {
-            None => valid = Some((vals[0], vals[1])),
-            Some((va, vb)) => {
-                let mut new = (None, None);
-                for v in vals.iter().flatten() {
-                    if va == Some(*v) || vb == Some(*v) {
-                        if new.0.is_none() {
-                            new.0 = Some(*v);
-                        } else {
-                            new.1 = Some(*v);
-                        }
-                    }
-                }
-                valid = Some(new);
-            }
-        }
-
-        if let Some((None, None)) = valid {
-            debug!("OVERCONSTRAINED");
-            return None;
-        }
-    }
-
-    if let Some(valid) = valid {
-        let mask = make_mask(n);
-
-        if let Some(v) = valid.0
-            && get_signed(x[0], n).wrapping_sub(v.wrapping_mul(get_signed(y[0], n))) == a
-        {
-            return Some((v as u64) & mask);
-        }
-
-        if let Some(v) = valid.1
-            && get_signed(x[0], n).wrapping_sub(v.wrapping_mul(get_signed(y[0], n))) == a
-        {
-            return Some((v as u64) & mask);
-        }
-
-        None
-    } else {
-        // the vector is null
-        Some(0)
     }
 }
 
@@ -364,11 +92,14 @@ struct MBASolver<'a, C: LinearCache> {
 
     /// A cache for simplifying linear MBAs
     l_cache: &'a C,
+
+    /// The options controlling this run.
+    options: SimplifyOptions,
 }
 
 impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// Create a new Solver
-    fn new(l_cache: &'a C, e: &Expr, n: u8) -> Self {
+    fn new(l_cache: &'a C, e: &Expr, n: u8, options: SimplifyOptions) -> Self {
         Self {
             non_linear_components: BiMap::new(),
             t: e.get_vars().iter().copied().map(|v| v.0).max().unwrap_or(0) + 1,
@@ -376,6 +107,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             n,
             mask: make_mask(n),
             l_cache,
+            options,
         }
     }
 
@@ -397,24 +129,42 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// Solves a non polynomial MBA
     fn solve(&mut self, e: Expr) -> Result<Expr, SolveError> {
         // TODO: Remove this only needs to be done once
-        let e = e.reduce(self.mask);
+        let e = e.reduce_masked(self.mask);
 
         let p = self.make_polynomial(e)?;
+        let p = self.merge_equal_hidden_components(p);
+        self.degree = 1;
+        let p = self.make_polynomial(p)?;
         let p = self.solve_polynomial(p)?;
 
         // This was a non linear MBA
-        if self.non_linear_components.len() != 0 {
+        let e = if self.non_linear_components.len() != 0 {
             let e = self.poly_to_nonpoly(p);
             debug!("After adding non linear components, found: {}", e);
-            Ok(e.reduce(self.mask))
+            e.reduce_masked(self.mask)
         } else {
-            Ok(p)
-        }
+            p
+        };
+
+        // Structural pattern rewrites, applied to the *solved* expression
+        // rather than the raw input. The residues these patterns target are
+        // what the solver leaves behind, and by this point the expression is
+        // a fraction of the size it arrived as — the matchers walk every node
+        // of it, so running them on the obfuscated input is both slower and
+        // less likely to match. A hit changes the expression, so
+        // `simplify_to_fixed_point` runs another pass and the downstream
+        // stages still get to exploit the collapse. Skipped when the caller
+        // disables the pattern engine via [`SimplifyOptions`].
+        Ok(if self.options.patterns {
+            crate::patterns::apply_patterns(e, self.mask)
+        } else {
+            e
+        })
     }
 
     /// Calcluates the signature of a linear MBA
     fn calc_signature(&self, e: &Expr, t: usize) -> Vec<u64> {
-        e.truth_table(t, self.mask)
+        e.truth_table_masked(t, self.mask)
     }
 
     /// Creates a conjuction sum for the given signature
@@ -425,7 +175,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         let constant = signature[0];
 
         if constant != 0 {
-            terms.push(Expr::Const(constant.into()));
+            terms.push(Expr::Const(constant));
 
             for v in &mut signature {
                 *v = v.wrapping_sub(constant);
@@ -464,7 +214,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         match terms.len() {
             0 => Expr::zero(),
-            1 => terms.into_iter().next().unwrap(),
+            1 => terms.remove(0),
             _ => Expr::Add(terms),
         }
     }
@@ -546,12 +296,8 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
                     e
                 } else {
                     // The sign correction -> see paper
-                    let s = if self.degree & 1 == 0 {
-                        VarInt::MAX
-                    } else {
-                        VarInt::ONE
-                    };
-                    Expr::Const(s * c)
+                    let s: u64 = if self.degree & 1 == 0 { u64::MAX } else { 1 };
+                    Expr::Const(s.wrapping_mul(c))
                 }
             }
 
@@ -598,8 +344,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             Expr::Var(v) => {
                 // The sign correction -> see paper
                 let s = if self.degree & 1 == 0 { u64::MAX } else { 1 };
-                // ERROR: this should be a t
-                Ok(s * Expr::Var((v.0 % self.degree).into()))
+                Ok(s * Expr::Var((v.0 % self.t).into()))
             }
 
             Expr::Const(_) => {
@@ -624,7 +369,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         let e = self.poly_to_linear(e, 0);
         let e: Expr = self.solve_linear(e, true)?;
-        let e = self.linear_to_poly(e)?.reduce(self.mask);
+        let e = self.linear_to_poly(e)?.reduce_masked(self.mask);
 
         debug!("Found polynomial solution: {}", e);
 
@@ -637,10 +382,11 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         let e = match e {
             Expr::Const(_) => e,
-            _ => simplify_mba_inner(self.l_cache, e, mask.count_ones() as u8)?.reduce(mask),
+            _ => simplify_mba_inner(self.l_cache, e, mask.count_ones() as u8, self.options)?
+                .reduce_masked(mask),
         };
 
-        let note = (-e.clone() - Expr::make_const(1)).reduce(mask);
+        let note = (-e.clone() - Expr::make_const(1)).reduce_masked(mask);
         debug!("!e would be {}", note);
 
         if let Some(v) = self.non_linear_components.get_by_right(&e) {
@@ -683,67 +429,79 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
     // Read paper
     fn variable_substitution(&self, e: Expr) -> Option<Expr> {
-        let mut vars = vec![];
         let mut sub_vars = vec![];
 
         for v in e.get_vars() {
-            if self.non_linear_components.get_by_left(&v).is_some() {
-                sub_vars.push(v);
-            } else {
-                vars.push(v);
+            if let Some(definition) = self.non_linear_components.get_by_left(&v)
+                && self.is_linear(definition)
+            {
+                sub_vars.push((v, definition));
             }
         }
+        sub_vars.sort_unstable_by_key(|(variable, _)| variable.0);
 
-        // TODO: allow 2 variable substitutions
-        if sub_vars.len() != 1 {
-            return None;
-        }
-
-        let sub_var = sub_vars[0];
-        let ee = self.non_linear_components.get_by_left(&sub_var).unwrap();
-
-        if !self.is_linear(ee) {
+        if sub_vars.is_empty() || sub_vars.len() > 2 {
             return None;
         }
 
         debug!("While checking if {} is linear", e);
         debug!("Proceding with advanced variable substitution");
-        debug!("Found substitution v{} = {}", sub_var, ee);
-
-        // This vector is null
-        let ee = Expr::Var(sub_var) - ee.clone();
-        debug!("Using zero expression {}", ee);
-
-        for v in ee.get_vars() {
-            if !vars.contains(&v) {
-                vars.push(v);
-            }
+        let mut zero_expressions = Vec::with_capacity(sub_vars.len());
+        for (sub_var, definition) in sub_vars {
+            debug!("Found substitution v{} = {}", sub_var, definition);
+            let zero = Expr::Var(sub_var) - definition.clone();
+            debug!("Using zero expression {}", zero);
+            zero_expressions.push(zero);
         }
 
         let mut var_map = BiMap::new();
         let mut t = 0;
 
         let reduced_e = reduce_vars(e.clone(), &mut var_map, &mut t);
-        let reduced_ee = reduce_vars(ee.clone(), &mut var_map, &mut t);
+        let reduced_zeros: Vec<_> = zero_expressions
+            .iter()
+            .cloned()
+            .map(|zero| reduce_vars(zero, &mut var_map, &mut t))
+            .collect();
+        if t > 10 {
+            return None;
+        }
 
         let se = self.calc_signature(&reduced_e, t);
         debug!("Using signature {:?}", se);
-        let see = self.calc_signature(&reduced_ee, t);
-        debug!("Using zero signature {:?}", see);
+        let zero_signatures: Vec<_> = reduced_zeros
+            .iter()
+            .map(|zero| self.calc_signature(zero, t))
+            .collect();
 
-        if let Some(lambda) = find_lambda_int(&se, &see, 0, 1, self.n) {
-            debug!("Found lambda that creates a [0, 1] signature: {:?}", lambda);
-            Some(e - lambda * ee)
-        } else if let Some(lambda) = find_lambda_int(&se, &see, -1, -2, self.n) {
-            debug!(
-                "Found lambda that creates a [-1, -2] signature: {:?}",
-                lambda
-            );
+        if zero_expressions.len() == 1 {
+            let see = &zero_signatures[0];
             debug!("Using zero signature {:?}", see);
-            Some(e - lambda * ee)
-        } else {
-            None
+            if let Some(lambda) = find_lambda_int(&se, see, 0, 1, self.n) {
+                debug!("Found lambda that creates a [0, 1] signature: {:?}", lambda);
+                return Some(e - lambda * zero_expressions.remove(0));
+            }
+            if let Some(lambda) = find_lambda_int(&se, see, -1, -2, self.n) {
+                debug!(
+                    "Found lambda that creates a [-1, -2] signature: {:?}",
+                    lambda
+                );
+                return Some(e - lambda * zero_expressions.remove(0));
+            }
+            return None;
         }
+
+        for (a, b) in [(0, 1), (-1, -2)] {
+            if let Some((left, right)) =
+                find_two_lambdas_int(&se, &zero_signatures[0], &zero_signatures[1], a, b, self.n)
+            {
+                debug!("Found two substitution lambdas: {}, {}", left, right);
+                return Some(
+                    e - left * zero_expressions[0].clone() - right * zero_expressions[1].clone(),
+                );
+            }
+        }
+        None
     }
 
     // A Linear MBA might "hide" a bitwise expression
@@ -757,7 +515,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             return None;
         }
 
-        let s = e.truth_table(t, mask);
+        let s = e.truth_table_masked(t, mask);
 
         if self.is_signature_bitwise(&s, mask) {
             debug!("Will treat {} as a bitwise expression", e);
@@ -773,7 +531,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         match e {
             // -1 and 0 are bitwise
             Expr::Const(c) => {
-                if c.get(mask) == 0 || c.get(mask) == self.mask {
+                if (c & mask) == 0 || (c & mask) == self.mask {
                     Ok(e)
                 } else {
                     self.hide_in_var(e, mask)
@@ -795,7 +553,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             Expr::And(terms) => {
                 for e in &terms {
                     if let Expr::Const(c) = e {
-                        let c = c.get(mask);
+                        let c = c & mask;
                         if c & (c.wrapping_add(1)) == 0 {
                             debug!("Found dynamic mask {} = 2^{} -1", c, c.count_ones());
                             mask = c;
@@ -881,7 +639,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         fn is_bitwise(e: &Expr, mask: u64) -> bool {
             match e {
                 // -1 and 0 are bitwise
-                Expr::Const(c) => (c.get(mask) == 0) || (c.get(mask) & mask == 0),
+                Expr::Const(c) => ((c & mask) == 0) || ((c & mask) == mask),
 
                 // Variables are bitwise
                 Expr::Var(_) => true,
@@ -912,42 +670,202 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
     }
 }
 
-fn simplify_mba_inner<C: LinearCache>(l_cache: &C, e: Expr, n: u8) -> Result<Expr, SolveError> {
-    let mut solver = MBASolver::new(l_cache, &e, n);
+fn simplify_mba_inner<C: LinearCache>(
+    l_cache: &C,
+    e: Expr,
+    n: u8,
+    options: SimplifyOptions,
+) -> Result<Expr, SolveError> {
+    let mut solver = MBASolver::new(l_cache, &e, n, options);
     solver.solve(e)
 }
 
-// I should probably add a flag for recursive simplification
-pub fn simplify_mba(e: Expr, n: u8) -> Result<Expr, SolveError> {
-    simplify_mba_with_cache(&LocalCache::new(), e, n)
+fn simplify_to_fixed_point<F>(mut e: Expr, mut simplify: F) -> Result<Expr, SolveError>
+where
+    F: FnMut(Expr) -> Result<Expr, SolveError>,
+{
+    let mut size = usize::MAX;
+
+    for _ in 0..MAX_SIMPLIFICATION_PASSES {
+        let next = simplify(e.clone())?;
+        debug!("e: {}", next);
+
+        let next_size = next.size();
+        // Always keep the pass just made. Size is not a proxy for quality here:
+        // a pass that grows the expression is usually the canonicalization the
+        // ground truth is compared against, and discarding it collapses the OK
+        // rate (loki_tiny 24997 -> 13522). The trade is that a cycle is
+        // indistinguishable from such a pass, so the result may be larger than
+        // an intermediate; the corpus shows no case where that costs anything.
+        let settled = next == e || next_size >= size;
+        e = next;
+        if settled {
+            return Ok(e);
+        }
+        size = next_size;
+    }
+
+    debug!("simplification pass limit reached");
+    Ok(e)
 }
 
-/// [`simplify_mba`] against a caller-owned cache.
+/// A reusable memo of solved linear MBAs.
 ///
-/// Solved linear MBAs are memoized in `cache`, so a caller that simplifies many
-/// expressions — or the same expressions repeatedly across rounds of an analysis
-/// — pays for each distinct linear solve once. Pass a [`LocalCache`] to reuse
-/// results on one thread, or an [`MbaCache`] to share them across several.
-pub fn simplify_mba_with_cache<C: LinearCache>(
+/// Simplifying an expression solves many linear sub-MBAs; a `SimplifyCache`
+/// remembers those solutions so that a caller simplifying many expressions — or
+/// the same ones repeatedly across rounds of an analysis — pays for each distinct
+/// linear solve once. Create one with [`SimplifyCache::new`] and hand it to
+/// [`simplify_mba_cached`]. It is safe to share one across threads.
+#[derive(Debug, Default)]
+pub struct SimplifyCache(MbaCache);
+
+impl SimplifyCache {
+    /// An empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Options controlling how an expression is simplified.
+///
+/// Use [`SimplifyOptions::default`] for the standard behaviour and pass a
+/// customised value to [`simplify_mba_with`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimplifyOptions {
+    /// Whether to run the structural pattern-rewrite engine before lifting the
+    /// expression to a polynomial. Enabled by default; disabling it is mainly
+    /// useful for measuring the engine's contribution.
+    pub patterns: bool,
+}
+
+impl Default for SimplifyOptions {
+    fn default() -> Self {
+        Self { patterns: true }
+    }
+}
+
+/// Simplifies a Mixed Boolean-Arithmetic expression on `n` bits.
+pub fn simplify_mba(e: Expr, n: u8) -> Result<Expr, SolveError> {
+    simplify_mba_with(e, n, SimplifyOptions::default())
+}
+
+/// [`simplify_mba`] with explicit [`SimplifyOptions`].
+pub fn simplify_mba_with(e: Expr, n: u8, options: SimplifyOptions) -> Result<Expr, SolveError> {
+    simplify_mba_with_cache(&LocalCache::new(), e, n, options)
+}
+
+/// [`simplify_mba`] against a caller-owned [`SimplifyCache`], so linear solves
+/// are reused across calls.
+pub fn simplify_mba_cached(e: Expr, n: u8, cache: &SimplifyCache) -> Result<Expr, SolveError> {
+    simplify_mba_with_cache(&cache.0, e, n, SimplifyOptions::default())
+}
+
+fn simplify_mba_with_cache<C: LinearCache>(
     cache: &C,
     e: Expr,
     n: u8,
+    options: SimplifyOptions,
 ) -> Result<Expr, SolveError> {
     let mask = make_mask(n);
-    let mut e = e.reduce(mask);
+    let e = e.reduce_masked(mask);
+    let e = simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n, options))?;
 
-    let mut size = usize::MAX;
-    loop {
-        e = simplify_mba_inner(cache, e, n)?;
-        debug!("e: {}", e);
-        let sz = e.size();
+    // The only place prettify may run: on the way out, after the fixed point has
+    // settled. See the module docs for why it must stay out of the loop.
+    Ok(prettify(e, n))
+}
 
-        if size == sz {
-            break;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
 
-        size = sz;
+    #[test]
+    fn disabling_patterns_skips_pattern_only_simplifications() {
+        // `X & -X & 2·X` collapses to 0 only through the structural pattern
+        // engine; the polynomial machinery alone leaves it untouched.
+        let e = (Expr::Var(0.into()) & (-Expr::Var(0.into())) & (2u64 * Expr::Var(0.into())))
+            .reduce(64);
+
+        assert_eq!(simplify_mba(e.clone(), 64), Ok(Expr::zero()));
+
+        let without_patterns = SimplifyOptions { patterns: false };
+        assert_ne!(simplify_mba_with(e, 64, without_patterns), Ok(Expr::zero()),);
     }
 
-    Ok(e)
+    #[test]
+    fn inverse_pct_round_trip_preserves_variable_index() {
+        let cache = LocalCache::new();
+        let mut solver =
+            MBASolver::new(&cache, &Expr::Var(2.into()), 8, SimplifyOptions::default());
+        solver.degree = 2;
+        let original = Expr::Var(2.into());
+        let encoded = solver.poly_to_linear(original.clone(), 2);
+
+        assert_eq!(encoded, Expr::Var(5.into()));
+        assert_eq!(solver.linear_to_poly(encoded), Ok(u64::MAX * original));
+    }
+
+    /// The loop stops at the first pass that fails to shrink the expression,
+    /// even when continuing would eventually reach something smaller.
+    ///
+    /// `Var(0)` -> `!Var(1)` -> `2·Var(2)` -> `Var(3)` plateaus in size at the
+    /// second step before shrinking again; the chase is abandoned there and the
+    /// plateau result is kept. Following such plateaus measured 16-61% across
+    /// the corpus while leaving every OK/OKZ/NG count unchanged.
+    #[test]
+    fn fixed_point_stops_at_the_first_pass_that_does_not_shrink() {
+        let result = simplify_to_fixed_point(Expr::Var(0.into()), |e| {
+            Ok(match e {
+                Expr::Var(VarId(0)) => !Expr::Var(1.into()),
+                Expr::Not(inner) if *inner == Expr::Var(1.into()) => 2u64 * Expr::Var(2.into()),
+                Expr::Scale(c, inner) if c == 2 && *inner == Expr::Var(2.into()) => {
+                    Expr::Var(3.into())
+                }
+                stable => stable,
+            })
+        });
+
+        assert_eq!(result, Ok(2u64 * Expr::Var(2.into())));
+    }
+
+    /// A two-cycle ends at the first pass that fails to shrink, and that pass
+    /// is kept even though an intermediate was smaller — see the note in
+    /// [`simplify_to_fixed_point`] on why the last pass always wins.
+    #[test]
+    fn fixed_point_cycle_stops_at_the_first_non_shrinking_pass() {
+        let start = !Expr::Var(0.into());
+        let result = simplify_to_fixed_point(start.clone(), |e| {
+            if e == start {
+                Ok(Expr::Var(1.into()))
+            } else {
+                Ok(start.clone())
+            }
+        });
+
+        assert_eq!(result, Ok(start));
+    }
+
+    #[test]
+    fn fixed_point_has_a_pass_limit() {
+        // Shrink on every pass, so the cap is what ends the run.
+        let terms: Vec<Expr> = (0..20).map(|i| Expr::Var(i.into())).collect();
+        let calls = Cell::new(0usize);
+        let result = simplify_to_fixed_point(Expr::Add(terms), |e| {
+            calls.set(calls.get() + 1);
+            Ok(match e {
+                Expr::Add(mut terms) if terms.len() > 1 => {
+                    terms.pop();
+                    Expr::Add(terms)
+                }
+                other => other,
+            })
+        });
+
+        assert_eq!(calls.get(), MAX_SIMPLIFICATION_PASSES);
+        let Ok(Expr::Add(remaining)) = result else {
+            panic!("expected a sum, got {result:?}");
+        };
+        assert_eq!(remaining.len(), 20 - MAX_SIMPLIFICATION_PASSES);
+    }
 }

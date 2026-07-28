@@ -19,7 +19,11 @@ log = "0.4.28"
 
 [lib]
 name = "wasm"
-crate-type = ["cdylib"]
+# `rlib` is needed so the wasm-bindgen integration tests can link the crate.
+crate-type = ["cdylib", "rlib"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [features]
 jit = ["rumba-core/jit"]

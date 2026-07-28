@@ -1,39 +1,23 @@
-use clap::{Arg, Command, Parser, Subcommand, command};
-use rumba_core::{parser::parse_expr, simplify::simplify_mba, varint::make_mask};
-use std::path::PathBuf;
+use clap::{Arg, Command};
+use rumba_core::{
+    parser::parse_expr,
+    simplify::{SimplifyOptions, simplify_mba_with},
+};
 
-#[derive(Parser, Debug)]
-#[command(author, version, about)]
-struct Cli {
-    #[command(subcommand)]
-    mode: Mode,
-}
+mod names;
 
-#[derive(Subcommand, Debug)]
-enum Mode {
-    /// Use a raw string input
-    Program {
-        /// The input string
-        input: String,
-    },
-
-    /// Use a file path
-    Expression {
-        /// The input file path
-        input: PathBuf,
-    },
-}
+use names::Names;
 
 fn main() {
     env_logger::init();
 
     let matches = Command::new("rumba")
-        .version("0.1")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Jack Royer")
-        .about("Accidently breaks polynomial MBAs")
+        .about("Simplifies polynomial MBA expressions")
         .arg(
             Arg::new("expression")
-                .help("Polynomial MBA with variables v0, v1")
+                .help("Polynomial MBA over arbitrary variable names, e.g. 'rax | rbx'")
                 .required(true),
         )
         .arg(
@@ -56,29 +40,47 @@ fn main() {
                 .default_value("32")
                 .value_parser(clap::value_parser!(u8)),
         )
+        .arg(
+            Arg::new("no-patterns")
+                .long("no-patterns")
+                .help("Disable the structural pattern-rewrite engine")
+                .action(clap::ArgAction::SetTrue),
+        )
         .get_matches();
 
     let expr = matches.get_one::<String>("expression").unwrap().to_string();
     let bits = *matches.get_one::<u8>("n").unwrap();
-    let mask = make_mask(bits);
+    let options = SimplifyOptions {
+        patterns: !matches.get_flag("no-patterns"),
+    };
 
-    let mut hex = false;
-    if matches.get_flag("hex") {
-        hex = true;
-    }
+    let hex = matches.get_flag("hex");
+
+    // Accept any C-style identifier by interning names to the `v<index>` the
+    // grammar knows, then spelling them back out on every line we print.
+    let (expr, names) = Names::rewrite(&expr);
 
     match parse_expr(&expr) {
         Ok(e) => {
-            println!("Simplify {}", e.repr(bits, mask, hex, false));
-            let sol = simplify_mba(e.clone(), bits);
-            println!("{}", sol.repr(bits, mask, hex, false));
+            println!("Simplify {}", names.restore(&e.repr(bits, hex, false)));
+            let sol = match simplify_mba_with(e.clone(), bits, options) {
+                Ok(solution) => solution,
+                Err(error) => {
+                    eprintln!("Failed to simplify expression: {error}");
+                    return;
+                }
+            };
+            println!("{}", names.restore(&sol.repr(bits, hex, false)));
 
             if matches.get_flag("test") {
-                if let Err((vars, v1, v2)) = e.sem_equal(&sol, mask, 1000) {
-                    eprintln!(
-                        "v0={} v1 ={} e(v0, v1)={} MBA(v0, v1)={}",
-                        vars[0], vars[1], v1, v2
-                    )
+                if let Err((vars, got, want)) = e.sem_equal(&sol, bits, 1000) {
+                    let assignment = vars
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| format!("{}={v}", names.get(i)))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    eprintln!("counterexample: {assignment} input={got} simplified={want}")
                 } else {
                     println!("Tested on 1K values found no errors");
                 }

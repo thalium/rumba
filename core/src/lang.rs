@@ -10,13 +10,16 @@ use log::debug;
 use crate::{
     expr::{Expr, VarId},
     simplify::simplify_mba,
-    varint::make_mask,
 };
 
+/// A single instruction defining variable [`Insn::id`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct Insn {
+    /// The variable this instruction defines.
     pub id: VarId,
+    /// The bit width of the defined variable.
     pub ty: u8,
+    /// How the variable's value is produced.
     pub kind: InsnKind,
 }
 
@@ -37,23 +40,27 @@ impl Display for Insn {
                 "u{} v{} = {}",
                 self.ty,
                 self.id,
-                e.repr(self.ty, make_mask(self.ty), false, false)
+                e.repr(self.ty, false, false)
             )),
         }
     }
 }
 
+/// How an [`Insn`] computes its variable's value.
 #[derive(Debug, PartialEq, Eq)]
 pub enum InsnKind {
+    /// The variable is assigned the value of an expression.
     Assign(Expr),
+    /// The variable is an opaque function of the given operands.
     Unknown(Vec<VarId>),
 }
 
 type Uses = HashSet<VarId>;
 
+/// A sequence of [`Insn`]s together with their use graph.
 #[derive(Debug)]
 pub struct Program {
-    pub insns: IndexMap<VarId, Insn>,
+    insns: IndexMap<VarId, Insn>,
     users: HashMap<VarId, Uses>,
 }
 
@@ -141,6 +148,21 @@ impl Program {
         }
 
         Ok(())
+    }
+
+    /// The number of instructions in the program.
+    pub fn len(&self) -> usize {
+        self.insns.len()
+    }
+
+    /// Whether the program has no instructions.
+    pub fn is_empty(&self) -> bool {
+        self.insns.is_empty()
+    }
+
+    /// The instruction at position `index` in program order, if any.
+    pub fn get_index(&self, index: usize) -> Option<&Insn> {
+        self.insns.get_index(index).map(|(_, insn)| insn)
     }
 
     /// Adds an instruction at the end of the current program

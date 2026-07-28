@@ -1,3 +1,9 @@
+// The JIT (opt-in `jit` feature) drives Cranelift codegen. A failure here means
+// the host toolchain/ISA could not be set up or the generated IR is malformed —
+// an environment/programming fault, not a solver input, so aborting is the right
+// behaviour rather than threading a codegen error through the solve path.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use cranelift::prelude::Configurable;
 use cranelift::{
     codegen::{
@@ -43,7 +49,7 @@ fn translate_expr(e: &Expr, builder: &mut FunctionBuilder, block: &Block) -> Val
                 .load(I64, flags, arg, Offset32::new(8 * idx.0 as i32))
         }
 
-        Expr::Const(var_int) => builder.ins().iconst(I64, **var_int as i64),
+        Expr::Const(var_int) => builder.ins().iconst(I64, *var_int as i64),
 
         Expr::Not(expr) => {
             let e = translate_expr(expr.as_ref(), builder, block);
@@ -52,7 +58,7 @@ fn translate_expr(e: &Expr, builder: &mut FunctionBuilder, block: &Block) -> Val
 
         Expr::Scale(var_int, expr) => {
             let e = translate_expr(expr.as_ref(), builder, block);
-            builder.ins().imul_imm(e, **var_int as i64)
+            builder.ins().imul_imm(e, *var_int as i64)
         }
 
         Expr::And(exprs) => {
@@ -161,4 +167,40 @@ pub fn compile(e: &Expr) -> JitFunction {
     let ptr: JitFunctionPtr = unsafe { std::mem::transmute(buffer.as_ptr()) };
 
     JitFunction { buffer, ptr }
+}
+
+#[cfg(all(test, feature = "parse"))]
+mod tests {
+    use rand::random_range;
+
+    use crate::parser::parse_expr;
+
+    #[test]
+    fn jit_matches_interpreter() {
+        let functions = [
+            "v0 + v1 + 2",
+            "-1*~v1+2*(v0^v1)-3*~(v0|~v1)-2*(v0&~v1)-1*(v0&v1)",
+            "-1*~(v0&~v1)+7*v1+2*~v0+8*(v0&~v1)-6*(v0&v1)",
+            "1*~(v0&v1)-6*v1+5*~(v0|v1)+6*~(v0|~v1)+6*(v0&~v1)+13*(v0&v1)",
+            "2*v0+1*~(v0&~v0)-1*(v0|~v1)+3*~(v0|v1)-2*(v0&~v1)-2*(v0&v1)",
+            "-7*~(v0^v1)+2*v0+2*~(v0|v1)-5*~(v0|~v1)-7*(v0&~v1)",
+        ];
+
+        for s in functions {
+            let e = parse_expr(s).unwrap();
+            let jit_fn = super::compile(&e);
+
+            let t = 2;
+            let mask = u64::MAX;
+
+            for _ in 0..1000 {
+                let vars: Vec<_> = (0..=t).map(|_| random_range(0..=mask)).collect();
+
+                let v1 = e.eval(&vars, 64);
+                let v2 = jit_fn.eval(&vars) & mask;
+
+                assert_eq!(v1, v2);
+            }
+        }
+    }
 }

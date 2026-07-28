@@ -2,7 +2,6 @@ use pyo3::exceptions;
 use pyo3::prelude::*;
 use rumba_core::expr;
 use rumba_core::simplify::simplify_mba;
-use rumba_core::varint::make_mask;
 
 #[cfg(feature = "parse")]
 use rumba_core::parser::parse_expr;
@@ -21,7 +20,7 @@ impl Expr {
         if let Some(py_obj) = obj {
             if let Ok(value) = py_obj.extract::<u64>() {
                 Ok(Self {
-                    inner: expr::Expr::Const(value.into()),
+                    inner: expr::Expr::Const(value),
                 })
             } else if let Ok(_value) = py_obj.extract::<String>() {
                 #[cfg(feature = "parse")]
@@ -60,7 +59,7 @@ impl Expr {
     #[staticmethod]
     fn int(c: u64) -> PyResult<Self> {
         Ok(Self {
-            inner: expr::Expr::Const(c.into()),
+            inner: expr::Expr::Const(c),
         })
     }
 
@@ -76,28 +75,28 @@ impl Expr {
 
     fn to_int(&self) -> PyResult<u64> {
         match self.inner {
-            expr::Expr::Const(c) => Ok(c.get(u64::MAX)),
+            expr::Expr::Const(c) => Ok(c),
             _ => Err(pyo3::exceptions::PyTypeError::new_err("Not an int")),
         }
     }
 
     /// Evaluates an expression with the given variables
     fn eval(&self, vars: Vec<u64>, n: u8) -> u64 {
-        self.inner.eval(&vars).get(make_mask(n))
+        self.inner.eval(&vars, n)
     }
 
     /// Perform arithmetic reduction on this expression
     fn reduce(&mut self, n: u8) -> Self {
         Self {
-            inner: self.inner.clone().reduce(make_mask(n)),
+            inner: self.inner.clone().reduce(n),
         }
     }
 
     /// Attempts to solve this expression, treating it as a non polynomial MBA
-    fn solve(&mut self, n: u8) -> Self {
-        Self {
-            inner: simplify_mba(self.inner.clone(), n),
-        }
+    fn solve(&mut self, n: u8) -> PyResult<Self> {
+        simplify_mba(self.inner.clone(), n)
+            .map(|inner| Self { inner })
+            .map_err(|error| exceptions::PyValueError::new_err(error.to_string()))
     }
 
     /// The number of nodes in this expression
@@ -119,7 +118,7 @@ impl Expr {
 
     /// A string representation of the expression
     fn repr(&self, bits: u8, hex: bool, latex: bool) -> String {
-        self.inner.repr(bits, make_mask(bits), hex, latex)
+        self.inner.repr(bits, hex, latex)
     }
 
     // Arithmetic operators
@@ -130,7 +129,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() + expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() + expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -150,7 +149,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() - expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() - expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -166,7 +165,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: expr::Expr::Const(rhs_int.into()) - self.inner.clone(),
+                inner: expr::Expr::Const(rhs_int) - self.inner.clone(),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -182,7 +181,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() * expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() * expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -202,7 +201,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() ^ expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() ^ expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -222,7 +221,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() & expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() & expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -242,7 +241,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() | expr::Expr::Const(rhs_int.into()),
+                inner: self.inner.clone() | expr::Expr::Const(rhs_int),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(
@@ -259,7 +258,7 @@ impl Expr {
         if let Ok(rhs) = other.extract::<Self>() {
             Ok(self.inner.clone() == rhs.inner.clone())
         } else if let Ok(rhs_int) = other.extract::<u64>() {
-            Ok(self.inner.clone() == expr::Expr::Const(rhs_int.into()))
+            Ok(self.inner.clone() == expr::Expr::Const(rhs_int))
         } else {
             Err(exceptions::PyTypeError::new_err(
                 "Operand must be ANFExpr or int",

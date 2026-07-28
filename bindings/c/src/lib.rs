@@ -6,7 +6,6 @@ use std::slice;
 use rumba_core::expr::Expr;
 use rumba_core::lang::{self, Insn, Program};
 use rumba_core::simplify::simplify_mba;
-use rumba_core::varint::make_mask;
 
 #[cfg(feature = "parse")]
 use rumba_core::parser::parse_expr;
@@ -123,22 +122,40 @@ pub unsafe extern "C" fn rumba_expr_free(ptr: *mut c_void) {
 
 /// Performs arithmentic reductions on `ptr` modulo 2^`n`
 /// This function takes frees `ptr` and returns a new pointer
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed;
+/// it is consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_reduce(ptr: *mut c_void, n: u8) -> *mut c_void {
     let expr = unsafe { take_ownership(ptr) };
-    make_expr_ptr(expr.reduce(make_mask(n)))
+    make_expr_ptr(expr.reduce(n))
 }
 
 /// Simplifies the MBA in `ptr` modulo 2^`n`
 /// This function takes frees `ptr` and returns a new pointer
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed;
+/// it is consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_simplify(ptr: *mut c_void, n: u8) -> *mut c_void {
     let expr = unsafe { take_ownership(ptr) };
-    make_expr_ptr(simplify_mba(expr, n))
+    match simplify_mba(expr, n) {
+        Ok(expression) => make_expr_ptr(expression),
+        Err(error) => {
+            set_last_error(&error.to_string());
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Evaluates the epxression `ptr` modulo 2^`n`
 /// on the variables in the array `arr` of length `len`
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
+/// `arr` must point to `len` readable `u64` values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_eval(
     ptr: *const c_void,
@@ -148,10 +165,13 @@ pub unsafe extern "C" fn rumba_expr_eval(
 ) -> u64 {
     let expr = unsafe { to_ref::<Expr>(ptr) };
     let vars = unsafe { vec_from_ptr(arr, len) };
-    expr.eval(vars).get(make_mask(n))
+    expr.eval(vars, n)
 }
 
 /// Counts the number of nodes in the expression `ptr`
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_size(ptr: *const c_void) -> usize {
     let expr = unsafe { to_ref::<Expr>(ptr) };
@@ -161,6 +181,11 @@ pub unsafe extern "C" fn rumba_expr_size(ptr: *const c_void) -> usize {
 /// Returns a string representation of `ptr` modulo 2^`n`
 /// `len` is the length of the returned string
 /// `flags` RUMBA_EXPR_REPR_FLAG
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
+/// `len`, if non-null, must point to a writable `usize`. The returned string is
+/// owned by the caller and must be freed with the C `free`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_repr(
     ptr: *const c_void,
@@ -171,7 +196,6 @@ pub unsafe extern "C" fn rumba_expr_repr(
     let expr = unsafe { to_ref::<Expr>(ptr) };
     let s = expr.repr(
         n,
-        make_mask(n),
         (flags & RUMBA_EXPR_REPR_FLAG_HEX) != 0,
         (flags & RUMBA_EXPR_REPR_FLAG_LATEX) != 0,
     );
@@ -187,6 +211,9 @@ pub unsafe extern "C" fn rumba_expr_repr(
 }
 
 /// Gets the type of the expression `ptr`.
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_ty(ptr: *const c_void) -> ExprTy {
     let expr = unsafe { to_ref::<Expr>(ptr) };
@@ -206,6 +233,9 @@ pub unsafe extern "C" fn rumba_expr_ty(ptr: *const c_void) -> ExprTy {
 /// Gets the number of children of this node.
 /// This should only be called on expressions of types
 /// `And, Or, Xor, Mul, Add, Scale, Not`.
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_children_size(ptr: *const c_void) -> usize {
     let expr = unsafe { to_ref::<Expr>(ptr) };
@@ -227,6 +257,10 @@ pub unsafe extern "C" fn rumba_expr_children_size(ptr: *const c_void) -> usize {
 /// This should only be called on expressions of types
 /// `And, Or, Xor, Mul, Add, Scale, Not`.
 /// `idx` should be less than `rumba_expr_children_size`.
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
+/// The returned pointer borrows from `ptr` and must not outlive it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_get_child(ptr: *const c_void, idx: usize) -> *const c_void {
     let expr = unsafe { to_ref::<Expr>(ptr) };
@@ -258,6 +292,11 @@ pub unsafe extern "C" fn rumba_expr_get_child(ptr: *const c_void, idx: usize) ->
 /// This should only be called on expressions of types
 /// `And, Or, Xor, Mul, Add, Scale, Not`.
 /// `idx` should be less than `rumba_expr_children_size`.
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
+/// The returned pointer borrows mutably from `ptr` and must not outlive it, and
+/// no other reference to the same node may be used while it is live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_get_child_mut(ptr: *mut c_void, idx: usize) -> *mut c_void {
     let expr = unsafe { to_mut_ref::<Expr>(ptr) };
@@ -287,18 +326,24 @@ pub unsafe extern "C" fn rumba_expr_get_child_mut(ptr: *mut c_void, idx: usize) 
 
 /// Gets the constant of this node.
 /// This should only be called on expressions of type `Const`.
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_get_const(ptr: *const c_void) -> u64 {
     let expr = unsafe { to_ref::<Expr>(ptr) };
 
     match expr {
-        Expr::Scale(c, _) | Expr::Const(c) => **c,
+        Expr::Scale(c, _) | Expr::Const(c) => *c,
         _ => panic!("Expression is not a CONST"),
     }
 }
 
 /// Gets the variable id of this node.
 /// This should only be called on expressions of type `Var`.
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_get_var(ptr: *const c_void) -> usize {
     let expr = unsafe { to_ref::<Expr>(ptr) };
@@ -311,18 +356,22 @@ pub unsafe extern "C" fn rumba_expr_get_var(ptr: *const c_void) -> usize {
 
 /// Create a new CONSTANT expression
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumba_make_const(c: u64) -> *mut c_void {
-    make_expr_ptr(Expr::Const(c.into()))
+pub extern "C" fn rumba_make_const(c: u64) -> *mut c_void {
+    make_expr_ptr(Expr::Const(c))
 }
 
 /// Create a new VARIABLE expression
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rumba_make_var(id: usize) -> *mut c_void {
+pub extern "C" fn rumba_make_var(id: usize) -> *mut c_void {
     make_expr_ptr(Expr::Var(id.into()))
 }
 
 /// Create a new NOT expression.
 /// `ptr` is freed and a new expression in allocated
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed;
+/// it is consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_bnot(ptr: *mut c_void) -> *mut c_void {
     let v = unsafe { take_ownership(ptr) };
@@ -331,6 +380,10 @@ pub unsafe extern "C" fn rumba_expr_bnot(ptr: *mut c_void) -> *mut c_void {
 
 /// Create a new AND expression.
 /// `lhs` and `rhs` are freed and a new expression in allocated
+///
+/// # Safety
+/// `lhs` and `rhs` must be valid expression handles from the rumba API and not
+/// yet freed; both are consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_band(lhs: *mut c_void, rhs: *mut c_void) -> *mut c_void {
     let lhs = unsafe { take_ownership(lhs) };
@@ -341,6 +394,10 @@ pub unsafe extern "C" fn rumba_expr_band(lhs: *mut c_void, rhs: *mut c_void) -> 
 
 /// Create a new XOR expression.
 /// `lhs` and `rhs` are freed and a new expression in allocated
+///
+/// # Safety
+/// `lhs` and `rhs` must be valid expression handles from the rumba API and not
+/// yet freed; both are consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_bxor(lhs: *mut c_void, rhs: *mut c_void) -> *mut c_void {
     let lhs = unsafe { take_ownership(lhs) };
@@ -351,6 +408,10 @@ pub unsafe extern "C" fn rumba_expr_bxor(lhs: *mut c_void, rhs: *mut c_void) -> 
 
 /// Create a new OR expression.
 /// `lhs` and `rhs` are freed and a new expression in allocated
+///
+/// # Safety
+/// `lhs` and `rhs` must be valid expression handles from the rumba API and not
+/// yet freed; both are consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_bor(lhs: *mut c_void, rhs: *mut c_void) -> *mut c_void {
     let lhs = unsafe { take_ownership(lhs) };
@@ -360,7 +421,11 @@ pub unsafe extern "C" fn rumba_expr_bor(lhs: *mut c_void, rhs: *mut c_void) -> *
 }
 
 /// Create a new ADD expression.
-/// `ptr` is freed and a new expression in allocated
+/// `lhs` and `rhs` are freed and a new expression in allocated
+///
+/// # Safety
+/// `lhs` and `rhs` must be valid expression handles from the rumba API and not
+/// yet freed; both are consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_add(lhs: *mut c_void, rhs: *mut c_void) -> *mut c_void {
     let lhs = unsafe { take_ownership(lhs) };
@@ -370,7 +435,11 @@ pub unsafe extern "C" fn rumba_expr_add(lhs: *mut c_void, rhs: *mut c_void) -> *
 }
 
 /// Create a new MUL expression.
-/// `ptr` is freed and a new expression in allocated
+/// `lhs` and `rhs` are freed and a new expression in allocated
+///
+/// # Safety
+/// `lhs` and `rhs` must be valid expression handles from the rumba API and not
+/// yet freed; both are consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_mul(lhs: *mut c_void, rhs: *mut c_void) -> *mut c_void {
     let lhs = unsafe { take_ownership(lhs) };
@@ -380,7 +449,11 @@ pub unsafe extern "C" fn rumba_expr_mul(lhs: *mut c_void, rhs: *mut c_void) -> *
 }
 
 /// Create a new substraction expression.
-/// `ptr` is freed and a new expression in allocated
+/// `lhs` and `rhs` are freed and a new expression in allocated
+///
+/// # Safety
+/// `lhs` and `rhs` must be valid expression handles from the rumba API and not
+/// yet freed; both are consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_sub(lhs: *mut c_void, rhs: *mut c_void) -> *mut c_void {
     let lhs = unsafe { take_ownership(lhs) };
@@ -391,6 +464,10 @@ pub unsafe extern "C" fn rumba_expr_sub(lhs: *mut c_void, rhs: *mut c_void) -> *
 
 /// Create a new neg expression.
 /// `ptr` is freed and a new expression in allocated
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed;
+/// it is consumed by this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_neg(ptr: *mut c_void) -> *mut c_void {
     let v = unsafe { take_ownership(ptr) };
@@ -398,6 +475,9 @@ pub unsafe extern "C" fn rumba_expr_neg(ptr: *mut c_void) -> *mut c_void {
 }
 
 /// Clones an expression.
+///
+/// # Safety
+/// `ptr` must be a valid expression handle from the rumba API and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_clone(ptr: *const c_void) -> *mut c_void {
     let ptr = unsafe { to_ref::<Expr>(ptr) };
@@ -407,6 +487,10 @@ pub unsafe extern "C" fn rumba_expr_clone(ptr: *const c_void) -> *mut c_void {
 #[cfg(feature = "parse")]
 /// Parses an expression from a string into res
 /// If an error occurs returns 1
+///
+/// # Safety
+/// `ptr` must point to a valid, null-terminated C string, and `res` must point
+/// to a writable location for the resulting expression handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_expr_parse(ptr: *const c_char, res: *mut *mut c_void) -> u8 {
     assert!(!res.is_null());
@@ -477,7 +561,7 @@ pub unsafe extern "C" fn rumba_program_simplify(p: *mut c_void) -> u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_program_size(p: *mut c_void) -> usize {
     let p: &mut Program = unsafe { to_mut_ref(p) };
-    p.insns.len()
+    p.len()
 }
 
 /// Returns the i-th instructions in a program
@@ -487,8 +571,8 @@ pub unsafe extern "C" fn rumba_program_size(p: *mut c_void) -> usize {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rumba_program_get(p: *mut c_void, i: usize) -> *const c_void {
     let p: &mut Program = unsafe { to_mut_ref(p) };
-    match p.insns.get_index(i) {
-        Some((_, insn)) => to_ptr(insn),
+    match p.get_index(i) {
+        Some(insn) => to_ptr(insn),
         None => null(),
     }
 }
@@ -662,4 +746,51 @@ pub extern "C" fn get_err_str() -> *const c_char {
             std::ptr::null()
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds `x + 3` from the constructors and evaluates it.
+    #[test]
+    fn builds_and_evaluates_expression() {
+        let x = rumba_make_var(0);
+        let three = rumba_make_const(3);
+        // rumba_expr_add consumes both operands.
+        let sum = unsafe { rumba_expr_add(x, three) };
+
+        let vars = [10u64];
+        let got = unsafe { rumba_expr_eval(sum, 64, vars.as_ptr(), vars.len()) };
+        assert_eq!(got, 13);
+
+        // A textual representation is produced and owned by the caller.
+        let mut len = 0usize;
+        let repr = unsafe { rumba_expr_repr(sum, 64, &mut len, 0) };
+        assert!(!repr.is_null());
+        let _ = unsafe { CString::from_raw(repr) };
+
+        unsafe { rumba_expr_free(sum) };
+    }
+
+    /// Parses an MBA, simplifies it, and checks it evaluates like `v0 + v1`.
+    #[cfg(feature = "parse")]
+    #[test]
+    fn parses_simplifies_and_evaluates_mba() {
+        let src = CString::new("(v0^v1)+2*(v0&v1)").unwrap();
+        let mut parsed: *mut c_void = std::ptr::null_mut();
+        let rc = unsafe { rumba_expr_parse(src.as_ptr(), &mut parsed) };
+        assert_eq!(rc, 0);
+        assert!(!parsed.is_null());
+
+        // rumba_expr_simplify consumes `parsed` and returns a fresh handle.
+        let simplified = unsafe { rumba_expr_simplify(parsed, 64) };
+        assert!(!simplified.is_null());
+
+        let vars = [123u64, 456u64];
+        let got = unsafe { rumba_expr_eval(simplified, 64, vars.as_ptr(), vars.len()) };
+        assert_eq!(got, 123u64.wrapping_add(456));
+
+        unsafe { rumba_expr_free(simplified) };
+    }
 }
