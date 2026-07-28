@@ -391,6 +391,15 @@ impl Expr {
     // https://en.cppreference.com/w/c/language/operator_precedence.html
     fn precedence(&self) -> usize {
         match self {
+            // A single-element collection is semantically its sole child, so it
+            // binds exactly as tightly (see also `repr_masked`, which renders
+            // straight through it).
+            Expr::And(e) | Expr::Or(e) | Expr::Xor(e) | Expr::Add(e) | Expr::Mul(e)
+                if e.len() == 1 =>
+            {
+                e[0].precedence()
+            }
+
             Expr::Var(_) | Expr::Const(_) => 0,
 
             Expr::Not(_) => 2,
@@ -409,7 +418,10 @@ impl Expr {
 
     /// Parenthesizes an expression if needed
     fn parenthesize(&self, parent: &Expr, s: String) -> String {
-        if parent.precedence() <= self.precedence() {
+        // Strict `<`: every operator here is flat and associative/commutative,
+        // so a same-precedence child never needs grouping. This also drops the
+        // cosmetic parens around a degenerate single-child node (e.g. `(v1)`).
+        if parent.precedence() < self.precedence() {
             format!("({})", s)
         } else {
             s
@@ -455,6 +467,14 @@ impl Expr {
                 .to_string()
         };
 
+        // A single-element collection node is just its child; render through it
+        // so no spurious `(v1)` wrapper appears.
+        if let Expr::And(e) | Expr::Or(e) | Expr::Xor(e) | Expr::Add(e) | Expr::Mul(e) = self
+            && e.len() == 1
+        {
+            return e[0].repr_masked(n, mask, hex, latex);
+        }
+
         match self {
             Expr::Var(v) => {
                 if latex {
@@ -477,11 +497,55 @@ impl Expr {
                 format!("{} {}", self.symbol(latex), recurs(expr))
             }
 
-            Expr::And(exprs)
-            | Expr::Or(exprs)
-            | Expr::Xor(exprs)
-            | Expr::Add(exprs)
-            | Expr::Mul(exprs) => join(exprs, &format!(" {} ", self.symbol(latex))),
+            Expr::Add(exprs) => {
+                let star = if latex { "\\cdot" } else { "*" };
+                let sign_bit = 1u64 << (n - 1);
+
+                // Splits a term into (is_negative, magnitude). A negative
+                // constant or a `Scale` with a negative coefficient is folded
+                // into a subtraction so the sum reads `a - b` rather than
+                // `a + (-b)`. Everything else keeps its normal, unsigned repr.
+                let term = |e: &Expr| -> (bool, String) {
+                    match e {
+                        Expr::Const(c) if c & mask & sign_bit != 0 => {
+                            let m = VarInt::from(c.wrapping_neg());
+                            (true, m.repr(n, mask, hex, latex))
+                        }
+                        Expr::Scale(c, inner) if c & mask & sign_bit != 0 => {
+                            let m = c.wrapping_neg() & mask;
+                            // The magnitude sits in a product context, so the
+                            // inner expression is parenthesized against `Mul`.
+                            let is = inner.parenthesize(
+                                &Expr::Mul(vec![]),
+                                inner.repr_masked(n, mask, hex, latex),
+                            );
+                            if m == 1 {
+                                (true, is)
+                            } else {
+                                let cs = VarInt::from(m).repr(n, mask, hex, latex);
+                                (true, format!("{cs} {star} {is}"))
+                            }
+                        }
+                        _ => (false, recurs(e)),
+                    }
+                };
+
+                let mut out = String::new();
+                for (i, e) in exprs.iter().enumerate() {
+                    let (neg, s) = term(e);
+                    if i == 0 {
+                        out.push_str(&if neg { format!("-{s}") } else { s });
+                    } else {
+                        out.push_str(if neg { " - " } else { " + " });
+                        out.push_str(&s);
+                    }
+                }
+                out
+            }
+
+            Expr::And(exprs) | Expr::Or(exprs) | Expr::Xor(exprs) | Expr::Mul(exprs) => {
+                join(exprs, &format!(" {} ", self.symbol(latex)))
+            }
         }
     }
 
