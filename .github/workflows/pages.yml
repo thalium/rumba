@@ -35,7 +35,7 @@ jobs:
         working-directory: bindings/wasm
         env:
           RUSTFLAGS: '--cfg getrandom_backend="wasm_js"'
-        run: wasm-pack build --target web --features parse --out-dir ../../web/pkg
+        run: wasm-pack build --target web --out-dir ../../web/pkg -- --features parse
       - uses: actions/configure-pages@v5
         if: github.ref == 'refs/heads/master'
       - uses: actions/upload-pages-artifact@v3
