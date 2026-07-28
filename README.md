@@ -1,5 +1,13 @@
 # Rumba
 
+[![CI](https://img.shields.io/github/actions/workflow/status/thalium/rumba/ci.yml?branch=master&label=CI&logo=github)](https://github.com/thalium/rumba/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/rumba?logo=rust&label=rumba)](https://crates.io/crates/rumba)
+[![rumba-core](https://img.shields.io/crates/v/rumba-core?logo=rust&label=rumba-core)](https://crates.io/crates/rumba-core)
+[![docs.rs](https://img.shields.io/docsrs/rumba-core?logo=docsdotrs&label=docs.rs)](https://docs.rs/rumba-core)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
+[![Playground](https://img.shields.io/badge/playground-wasm-663399?logo=webassembly&logoColor=white)](https://thalium.github.io/rumba/)
+[![Paper](https://img.shields.io/badge/paper-hal--05578742-b31b1b)](https://hal.science/hal-05578742/document)
+
 A fast simplifier for Mixed Boolean-Arithmetic (MBA) expressions.
 
 MBA expressions interleave bitwise operators (`&`, `|`, `^`, `~`) with arithmetic
@@ -89,21 +97,21 @@ Measured on the GAMBA dataset (41 000 expressions), at 64 bits:
 
 | Dataset | Count | OK | OKZ | NG | Median |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `loki_tiny` | 25 000 | 24 994 | 1 | 5 | 67.99 µs |
-| `neureduce` | 10 000 | 10 000 | 0 | 0 | 133.67 µs |
-| `mba_flatten` | 3 000 | 3 000 | 0 | 0 | 43.57 µs |
-| `mba_obf_linear` | 1 000 | 1 000 | 0 | 0 | 414.76 µs |
-| `mba_obf_nonlinear` | 1 000 | 1 000 | 0 | 0 | 136.59 µs |
-| `syntia` | 500 | 480 | 20 | 0 | 43.86 µs |
-| `qsynth_ea` | 500 | 376 | 124 | 0 | 497.52 µs |
-| **Total** | **41 000** | **40 850** | **145** | **5** | |
+| `loki_tiny` | 25 000 | 24 997 | 1 | 2 | 45.30 µs |
+| `neureduce` | 10 000 | 10 000 | 0 | 0 | 74.99 µs |
+| `mba_flatten` | 3 000 | 3 000 | 0 | 0 | 38.06 µs |
+| `mba_obf_linear` | 1 000 | 1 000 | 0 | 0 | 81.98 µs |
+| `mba_obf_nonlinear` | 1 000 | 1 000 | 0 | 0 | 147.08 µs |
+| `syntia` | 500 | 480 | 20 | 0 | 36.81 µs |
+| `qsynth_ea` | 500 | 376 | 124 | 0 | 829.34 µs |
+| **Total** | **41 000** | **40 853** | **145** | **2** | |
 
 - **OK** — the simplified expression is syntactically identical to the
   simplified ground truth.
 - **OKZ** — the two differ syntactically, but `simplify(mba - ground_truth)`
   reduces to `0`, so they are proven equivalent.
 - **NG** — neither of the above. Solver errors are counted here too, so there is
-  no separate **ERR** bucket: the 5 above is the total of both.
+  no separate **ERR** bucket: the 2 above is the total of both.
 
 Every result is additionally checked for semantic equivalence against the input
 on 200 random assignments; a mismatch fails the test suite outright, so no
