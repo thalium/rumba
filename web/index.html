@@ -8,12 +8,30 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<!-- Theme must be on <html> before the first paint, otherwise a dark-theme
+     reload renders one light frame and then flashes. Deliberately a blocking
+     inline script in <head>: the module script at the end of <body> is
+     deferred and would run too late. Light is the default; only an explicit
+     stored choice switches to dark. -->
+<script>
+  (function () {
+    var theme = "light";
+    try {
+      if (localStorage.getItem("rumba-theme") === "dark") theme = "dark";
+    } catch (e) {}
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
 <style>
   :root {
     --bg: #f1f0f8; --dot: #d9d6ec; --card: #ffffff; --ink: #17161f;
     --muted: #4a4860; --dim: #8a88a0; --faint: #a8a6bc; --border: #17161f;
     --line: #e0ddf0; --field: #f7f6fc; --panel: #fbfaff; --accent: #5b3df5;
     --accent-dark: #4a2fe0; --accent-ink: #ffffff; --pill-bg: #eeecfa;
+    /* Accent used as *text*. Split from --accent so the dark theme can lighten
+       the purple for contrast without washing out the accent-filled surfaces
+       (the run button, the segmented control) that carry white ink. */
+    --accent-fg: #5b3df5; --accent-fg-hover: #4a2fe0;
     --lime: #c8f000; --lime-ink: #2e3b00; --shadow: rgba(91,61,245,.9);
     --amber: #ffcf33; --amber-ink: #4a3600; --select: rgba(91,61,245,.18);
     --ok: #3f8000; --bad: #e23d6b; --bad-bg: rgba(226,61,107,.12);
@@ -23,6 +41,7 @@
     --muted: #c2c0d8; --dim: #9a98b4; --faint: #6f6d88; --border: #3a374f;
     --line: #2c2a42; --field: #14131f; --panel: #1f1d36; --accent: #7a5cff;
     --accent-dark: #8f74ff; --accent-ink: #ffffff; --pill-bg: #2a2748;
+    --accent-fg: #c0aeff; --accent-fg-hover: #dad0ff;
     --lime: #c8f000; --lime-ink: #2e3b00; --shadow: rgba(122,92,255,.55);
     --amber: #f0b429; --amber-ink: #2b1e00; --select: rgba(122,92,255,.35);
     --ok: #8fd34a; --bad: #ff5c85; --bad-bg: rgba(255,92,133,.16);
@@ -42,8 +61,8 @@
   }
   main { max-width: 680px; margin: 0 auto; }
   ::selection { background: var(--select); }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { color: var(--accent-dark); text-decoration: underline; text-underline-offset: 3px; }
+  a { color: var(--accent-fg); text-decoration: none; }
+  a:hover { color: var(--accent-fg-hover); text-decoration: underline; text-underline-offset: 3px; }
   textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .mono { font-family: "Space Mono", monospace; }
 
@@ -64,7 +83,7 @@
   @media (prefers-reduced-motion: reduce) { .caret { animation: none } }
   .badge {
     font-family: "Space Mono", monospace; font-size: 10.5px; font-weight: 700;
-    letter-spacing: .08em; text-transform: uppercase; color: var(--accent);
+    letter-spacing: .08em; text-transform: uppercase; color: var(--accent-fg);
     background: var(--pill-bg); border-radius: 999px; padding: 4px 10px;
   }
   .tagline { margin: 14px 0 0; font-size: 14.5px; line-height: 1.6; color: var(--muted); max-width: 60ch; }
@@ -162,7 +181,7 @@
   .ex-label { display: block; font-family: "Space Grotesk", sans-serif; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
   .ex-src {
     display: block; font-family: "Space Mono", monospace; font-size: 12.5px;
-    color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--accent-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
   footer {
@@ -220,8 +239,9 @@
         <label class="eyebrow" for="input">Expression</label>
         <span class="vars">variables: v0, v1, …</span>
       </div>
-      <textarea id="input" spellcheck="false" autocapitalize="off" autocorrect="off"
-                placeholder="(v0^v1)+2*(v0&amp;v1)"></textarea>
+      <!-- Pre-filled rather than a placeholder: the field starts on a runnable
+           expression, so the first click on Simplify already does something. -->
+      <textarea id="input" spellcheck="false" autocapitalize="off" autocorrect="off">(v0^v1)+2*(v0&amp;v1)</textarea>
 
       <div class="controls">
         <button class="run" id="run" disabled>Simplify →</button>
@@ -263,8 +283,9 @@ const input = $("input"), run = $("run"), status = $("status"), bitsEl = $("bits
 const result = $("result"), output = $("output"), note = $("note");
 const checked = $("checked"), pill = $("pill");
 
-// Theme: persisted in localStorage, defaults to the OS preference. The root
-// element carries data-theme; absence of the attribute means light.
+// Theme: light by default, dark only when the user has picked it (persisted in
+// localStorage). The inline <head> script already put data-theme on the root
+// before the first paint; this only picks that value up to label the toggle.
 const themeToggle = $("theme-toggle"), themeIcon = $("theme-icon"), themeLabel = $("theme-label");
 
 function applyTheme(theme) {
@@ -274,12 +295,7 @@ function applyTheme(theme) {
   themeLabel.textContent = dark ? "light" : "dark";
 }
 
-let theme = "light";
-try {
-  const stored = localStorage.getItem("rumba-theme");
-  if (stored === "dark" || stored === "light") theme = stored;
-  else if (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) theme = "dark";
-} catch (e) {}
+let theme = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
 applyTheme(theme);
 
 themeToggle.addEventListener("click", () => {
