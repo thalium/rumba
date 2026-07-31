@@ -10,7 +10,7 @@ authors = ["Jack Royer"]
 repository = "https://github.com/thalium/rumba"
 
 [workspace.dependencies]
-rumba-core = { path = "core" }
+rumba-core = { version = "1.0.1", path = "core" }
 
 [profile.dev]
 panic = "unwind"
