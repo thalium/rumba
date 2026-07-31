@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pyrumba"
+description = "Python bindings for rumba, an MBA (Mixed Boolean-Arithmetic) expression simplifier"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "Jack Royer" }]
+keywords = ["mba", "deobfuscation", "simplification", "reverse-engineering"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Security",
+]
+# Taken from bindings/python/Cargo.toml, i.e. the workspace version.
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/thalium/rumba"
+Repository = "https://github.com/thalium/rumba"
+Issues = "https://github.com/thalium/rumba/issues"
+
+[tool.maturin]
+module-name = "pyrumba"
+# `parse` is required: without it `Expr("...")` and `Expr.parse` are cfg'd out
+# and the wheel can only build expressions programmatically.
+features = ["pyo3/extension-module", "parse"]
+# maturin picks up pyrumba.pyi on its own and ships it as pyrumba/__init__.pyi
+# with a py.typed marker, so no `include` entry is needed for the stubs.

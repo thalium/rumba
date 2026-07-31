@@ -1,7 +1,9 @@
 name: Release
 
-# Publishes to crates.io when a version tag is pushed, e.g. `v1.0.0`.
-# Requires a `CARGO_REGISTRY_TOKEN` repository secret (crates.io API token).
+# Publishes to crates.io and PyPI when a version tag is pushed, e.g. `v1.0.0`.
+# crates.io requires a `CARGO_REGISTRY_TOKEN` repository secret (crates.io API
+# token); PyPI uses trusted publishing (OIDC), so it needs no secret -- see the
+# `pypi` job below.
 on:
   push:
     tags:
@@ -11,13 +13,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  publish:
-    name: publish to crates.io
+  verify:
+    name: verify tag matches workspace version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-
       - name: Verify tag matches workspace version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -25,6 +26,14 @@ jobs:
             | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="rumba-core"))')
           echo "tag=$TAG crate=$CRATE_VER"
           test "$TAG" = "$CRATE_VER" || { echo "::error::tag v$TAG != rumba-core $CRATE_VER"; exit 1; }
+
+  crates:
+    name: publish to crates.io
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
 
       # Publish the core first; the CLI depends on it. `cargo publish` waits for
       # the crate to be available on the index before returning.
@@ -37,3 +46,70 @@ jobs:
         run: cargo publish -p rumba
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # One wheel per platform, not per interpreter: the extension is built against
+  # the stable ABI (`abi3-py39`), so a single wheel covers CPython 3.9+.
+  wheels:
+    name: wheel (${{ matrix.platform.target }} ${{ matrix.platform.runner }})
+    needs: verify
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { runner: ubuntu-latest, target: x86_64 }
+          - { runner: ubuntu-latest, target: aarch64 }
+          - { runner: macos-13, target: x86_64 }
+          - { runner: macos-14, target: aarch64 }
+          - { runner: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Build the wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          # aarch64 linux is cross-compiled inside maturin's manylinux image.
+          target: ${{ matrix.platform.target }}
+          manylinux: auto
+          args: --release --out dist -m bindings/python/Cargo.toml
+          sccache: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform.runner }}-${{ matrix.platform.target }}
+          path: dist
+
+  sdist:
+    name: sdist
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist -m bindings/python/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  pypi:
+    name: publish to PyPI
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    # Trusted publishing: configure github.com/thalium/rumba + release.yml +
+    # environment `pypi` as a publisher for the `pyrumba` project on PyPI.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

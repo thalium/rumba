@@ -2,6 +2,12 @@
 
 An MBA simplification library.
 
+## Installation
+
+```sh
+pip install pyrumba
+```
+
 ## Example
 
 ```py
