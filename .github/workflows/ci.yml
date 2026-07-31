@@ -88,12 +88,21 @@ jobs:
           python-version: "3.x"
       - name: Install maturin and pytest
         run: pip install maturin pytest
+      # Features and metadata come from bindings/python/pyproject.toml, so this
+      # builds the same wheel the release workflow publishes.
       - name: Build the pyrumba wheel
-        run: maturin build -m bindings/python/Cargo.toml --features parse --out dist
+        run: maturin build -m bindings/python/Cargo.toml --out dist
       - name: Install the wheel
         run: pip install pyrumba --no-index --find-links dist
       - name: Run pytest
         run: pytest bindings/python/tests --verbose
+      # Packaging metadata is only exercised at release time otherwise.
+      - name: Build the sdist
+        run: maturin sdist -m bindings/python/Cargo.toml --out dist
+      - name: Check the distributions
+        run: |
+          pip install twine
+          twine check dist/*
 
   docs:
     name: doc

@@ -5,12 +5,12 @@ members = ["core", "cli", "bindings/python", "bindings/wasm", "bindings/c"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Jack Royer"]
 repository = "https://github.com/thalium/rumba"
 
 [workspace.dependencies]
-rumba-core = { version = "1.0.0", path = "core" }
+rumba-core = { path = "core" }
 
 [profile.dev]
 panic = "unwind"

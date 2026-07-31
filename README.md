@@ -4,6 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/rumba?logo=rust&label=rumba)](https://crates.io/crates/rumba)
 [![rumba-core](https://img.shields.io/crates/v/rumba-core?logo=rust&label=rumba-core)](https://crates.io/crates/rumba-core)
 [![docs.rs](https://img.shields.io/docsrs/rumba-core?logo=docsdotrs&label=docs.rs)](https://docs.rs/rumba-core)
+[![PyPI](https://img.shields.io/pypi/v/pyrumba?logo=pypi&logoColor=white&label=pyrumba)](https://pypi.org/project/pyrumba/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 [![Playground](https://img.shields.io/badge/playground-wasm-663399?logo=webassembly&logoColor=white)](https://thalium.github.io/rumba/)
 [![Paper](https://img.shields.io/badge/paper-hal--05578742-b31b1b)](https://hal.science/hal-05578742/document)
@@ -29,6 +30,7 @@ simplifier compiled to WebAssembly, running locally in the page.
 ```sh
 cargo install rumba          # CLI
 cargo add rumba-core         # library
+pip install pyrumba          # python bindings
 ```
 
 Or build from source:
