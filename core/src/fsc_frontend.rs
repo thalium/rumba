@@ -97,8 +97,13 @@ fn render(descriptor: OneBaseDescriptor) -> Option<Expr> {
     Some(Recipe::from_signature(signature(descriptor)?).instantiate(descriptor.variables))
 }
 
+fn render_terminal(descriptor: OneBaseDescriptor) -> Option<Expr> {
+    render(descriptor).or_else(|| crate::onebase_mobius::render_terminal(descriptor))
+}
+
 pub(crate) fn simplify(source: &Expr, width: u8) -> Option<Expr> {
-    render(compile_one_base(source, width)?)
+    let descriptor = compile_one_base(source, width)?;
+    render_terminal(descriptor)
 }
 
 #[cfg(all(test, feature = "parse"))]
@@ -256,9 +261,9 @@ mod tests {
                     .zip(authoritative)
                     .is_some_and(|(left, right)| !same_key(left, right)),
             );
-            let expected_candidate = authoritative.and_then(render);
+            let expected_candidate = authoritative.and_then(render_terminal);
             let candidate = compiled
-                .and_then(render)
+                .and_then(render_terminal)
                 .map(Expr::canonicalize_commutative);
             terminal_lost += usize::from(expected_candidate.is_some() && candidate.is_none());
             if let Some(candidate) = candidate {
@@ -294,7 +299,7 @@ mod tests {
         );
         assert_eq!(one_base, 30_849);
         assert_eq!(direct, 11_809);
-        assert_eq!(terminal, 15_632);
+        assert_eq!(terminal, 26_694);
         assert_eq!(false_positive, 0);
         assert_eq!(descriptor_mismatch, 0);
         assert_eq!(semantic_mismatch_count, 0);
@@ -315,7 +320,7 @@ mod tests {
     fn frontend(source: &Expr) -> (Expr, Breakdown) {
         let compile = compile_one_base_profiled(source, WIDTH);
         let lookup_started = Instant::now();
-        let candidate = compile.descriptor.and_then(render);
+        let candidate = compile.descriptor.and_then(render_terminal);
         let descriptor_lookup_ns = lookup_started.elapsed().as_nanos();
         if let Some(candidate) = candidate {
             return (

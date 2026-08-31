@@ -98,14 +98,14 @@ Measured on the GAMBA dataset (41 000 expressions), at 64 bits:
 
 | Dataset | Count | OK | OKZ | NG | p50 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `loki_tiny` | 25 000 | 25 000 | 0 | 0 | 11 µs |
+| `loki_tiny` | 25 000 | 25 000 | 0 | 0 | 7 µs |
 | `neureduce` | 10 000 | 9 922 | 78 | 0 | 27 µs |
 | `mba_flatten` | 3 000 | 2 965 | 35 | 0 | 32 µs |
-| `mba_obf_linear` | 1 000 | 997 | 3 | 0 | 35 µs |
-| `mba_obf_nonlinear` | 1 000 | 993 | 7 | 0 | 55 µs |
-| `syntia` | 500 | 480 | 20 | 0 | 9 µs |
-| `qsynth_ea` | 500 | 376 | 124 | 0 | 239 µs |
-| **Total** | **41 000** | **40 733** | **267** | **0** | **18 µs** |
+| `mba_obf_linear` | 1 000 | 997 | 3 | 0 | 31 µs |
+| `mba_obf_nonlinear` | 1 000 | 993 | 7 | 0 | 52 µs |
+| `syntia` | 500 | 480 | 20 | 0 | 8 µs |
+| `qsynth_ea` | 500 | 376 | 124 | 0 | 240 µs |
+| **Total** | **41 000** | **40 733** | **267** | **0** | **12 µs** |
 
 - **OK** — the simplified expression is syntactically identical to the
   simplified ground truth.

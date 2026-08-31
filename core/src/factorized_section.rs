@@ -687,6 +687,16 @@ pub(crate) fn compile_one_base(source: &Expr, width: u8) -> Option<OneBaseDescri
     compile_one_base_analyzed(source, variables).ok().flatten()
 }
 
+pub(crate) fn compile_declared_one_base_descriptor(
+    source: &Expr,
+    variables: [VarId; 2],
+) -> Option<OneBaseDescriptor> {
+    if !variables_valid(variables) {
+        return None;
+    }
+    compile_one_base_analyzed(source, variables).ok().flatten()
+}
+
 #[cfg(test)]
 pub(crate) struct OneBaseCompileProfile {
     pub(crate) descriptor: Option<OneBaseDescriptor>,

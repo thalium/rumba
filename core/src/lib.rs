@@ -55,6 +55,7 @@ pub mod simplify;
 
 mod factorized_section;
 mod fsc_frontend;
+mod onebase_mobius;
 
 pub(crate) mod prettify;
 pub(crate) mod reduce;
