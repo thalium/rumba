@@ -35,11 +35,23 @@ struct Counts {
     ok: usize,
     okz: usize,
     ng: usize,
+    wins: usize,
+    ties: usize,
+    losses: usize,
+    total_ast: usize,
+    raw_ast: usize,
 }
 
 impl Counts {
-    fn record(&mut self, status: &Status) {
+    fn record(&mut self, status: &Status, actual_cost: usize, raw_cost: usize) {
         self.total += 1;
+        self.total_ast += actual_cost;
+        self.raw_ast += raw_cost;
+        match actual_cost.cmp(&raw_cost) {
+            std::cmp::Ordering::Less => self.wins += 1,
+            std::cmp::Ordering::Equal => self.ties += 1,
+            std::cmp::Ordering::Greater => self.losses += 1,
+        }
         match status {
             Status::Ok => self.ok += 1,
             Status::OkZ => self.okz += 1,
@@ -52,6 +64,11 @@ impl Counts {
         self.ok += other.ok;
         self.okz += other.okz;
         self.ng += other.ng;
+        self.wins += other.wins;
+        self.ties += other.ties;
+        self.losses += other.losses;
+        self.total_ast += other.total_ast;
+        self.raw_ast += other.raw_ast;
     }
 }
 
@@ -214,12 +231,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
-fn classify(source: &str, mba: Expr, ground_truth: Expr) -> Status {
-    let simplified = match simplify_mba(mba.clone(), BIT_COUNT) {
-        Ok(simplified) => simplified,
-        Err(_) => return Status::Ng,
-    };
-
+fn classify(source: &str, mba: Expr, ground_truth: Expr, simplified: &Expr) -> Status {
     if let Err((variables, actual, expected)) =
         simplified.sem_equal(&ground_truth, BIT_COUNT, SEMANTIC_TEST_COUNT)
     {
@@ -233,7 +245,7 @@ fn classify(source: &str, mba: Expr, ground_truth: Expr) -> Status {
         Err(_) => return Status::Ng,
     };
 
-    if simplified == simplified_ground_truth {
+    if *simplified == simplified_ground_truth {
         Status::Ok
     } else {
         match simplify_mba((mba - ground_truth).reduce(BIT_COUNT), BIT_COUNT) {
@@ -250,14 +262,38 @@ fn run_quality(rows: &[corpus::CorpusRow<'_>]) -> Counts {
             .unwrap_or_else(|error| panic!("failed to parse {}: {error}", row.source));
         let ground_truth = parse_expr(row.ground_truth)
             .unwrap_or_else(|error| panic!("failed to parse {}: {error}", row.source));
-        let status = classify(&row.source, mba, ground_truth);
-        counts.record(&status);
+        let raw_cost = ground_truth.size();
+        let simplified = simplify_mba(mba.clone(), BIT_COUNT);
+        let (status, actual_cost) = match simplified {
+            Ok(simplified) => {
+                let actual_cost = simplified.size();
+                (
+                    classify(&row.source, mba, ground_truth, &simplified),
+                    actual_cost,
+                )
+            }
+            Err(_) => (Status::Ng, mba.size()),
+        };
+        counts.record(&status, actual_cost, raw_cost);
     }
     counts
 }
 
-const QUALITY_HEADERS: [&str; 5] = ["Dataset", "Total", "OK", "OKZ", "NG"];
-const QUALITY_ALIGNMENTS: [table::Alignment; 5] = [Left, Right, Right, Right, Right];
+const QUALITY_HEADERS: [&str; 10] = [
+    "Dataset",
+    "Total",
+    "OK",
+    "OKZ",
+    "NG",
+    "Win",
+    "Tied",
+    "Loss",
+    "Actual AST",
+    "Raw AST",
+];
+const QUALITY_ALIGNMENTS: [table::Alignment; 10] = [
+    Left, Right, Right, Right, Right, Right, Right, Right, Right, Right,
+];
 const PERFORMANCE_HEADERS: [&str; 7] = ["Dataset", "Time", "Expr/s", "p50", "p95", "p99", "Max"];
 const PERFORMANCE_ALIGNMENTS: [table::Alignment; 7] =
     [Left, Right, Right, Right, Right, Right, Right];
@@ -271,7 +307,7 @@ fn dataset_width() -> usize {
         .expect("corpus list is not empty")
 }
 
-fn quality_widths() -> [usize; 5] {
+fn quality_widths() -> [usize; 10] {
     let expression_count = DATASETS
         .iter()
         .map(|dataset| {
@@ -289,6 +325,11 @@ fn quality_widths() -> [usize; 5] {
         count_width,
         count_width,
         count_width,
+        count_width,
+        count_width,
+        count_width,
+        "Actual AST".len(),
+        "Raw AST".len(),
     ]
 }
 
@@ -296,7 +337,7 @@ fn performance_widths() -> [usize; 7] {
     [dataset_width(), 8, 6, 8, 8, 8, 8]
 }
 
-fn print_quality_header(widths: &[usize; 5]) {
+fn print_quality_header(widths: &[usize; 10]) {
     println!("## Quality\n");
     print!(
         "{}",
@@ -304,13 +345,18 @@ fn print_quality_header(widths: &[usize; 5]) {
     );
 }
 
-fn print_quality_row(name: &str, counts: Counts, widths: &[usize; 5]) {
+fn print_quality_row(name: &str, counts: Counts, widths: &[usize; 10]) {
     let cells = vec![
         name.to_owned(),
         counts.total.to_string(),
         counts.ok.to_string(),
         counts.okz.to_string(),
         counts.ng.to_string(),
+        counts.wins.to_string(),
+        counts.ties.to_string(),
+        counts.losses.to_string(),
+        counts.total_ast.to_string(),
+        counts.raw_ast.to_string(),
     ];
     print!("{}", table::render_row(&cells, widths, &QUALITY_ALIGNMENTS));
     io::stdout().flush().expect("failed to flush corpus report");
@@ -581,7 +627,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        BenchmarkResult, Summary, deserialize, format_duration, median_summary, serialize,
+        BenchmarkResult, Counts, Status, Summary, deserialize, format_duration, median_summary,
+        serialize,
     };
     use std::time::Duration;
 
@@ -619,6 +666,21 @@ mod tests {
     fn formats_compact_numeric_columns() {
         assert_eq!(format_duration(Duration::from_micros(129_700)), "130 ms");
         assert_eq!(format_duration(Duration::from_micros(4_330)), "4.33 ms");
+    }
+
+    #[test]
+    fn aggregates_ast_comparisons_and_totals() {
+        let mut counts = Counts::default();
+        counts.record(&Status::Ok, 2, 3);
+        counts.record(&Status::OkZ, 4, 4);
+        counts.record(&Status::Ng, 6, 5);
+
+        assert_eq!(counts.total, 3);
+        assert_eq!(counts.wins, 1);
+        assert_eq!(counts.ties, 1);
+        assert_eq!(counts.losses, 1);
+        assert_eq!(counts.total_ast, 12);
+        assert_eq!(counts.raw_ast, 12);
     }
 
     #[test]
