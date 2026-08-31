@@ -53,6 +53,9 @@ pub mod expr;
 /// MBA simplification entry points.
 pub mod simplify;
 
+mod factorized_section;
+mod fsc_frontend;
+
 pub(crate) mod patterns;
 pub(crate) mod prettify;
 pub(crate) mod reduce;

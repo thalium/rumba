@@ -97,34 +97,34 @@ Bindings for [Python](bindings/python), [C](bindings/c) and
 
 Measured on the GAMBA dataset (41 000 expressions), at 64 bits:
 
-| Dataset | Count | OK | OKZ | NG | Median |
+| Dataset | Count | OK | OKZ | NG | p50 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `loki_tiny` | 25 000 | 24 997 | 1 | 2 | 45.30 µs |
-| `neureduce` | 10 000 | 10 000 | 0 | 0 | 74.99 µs |
-| `mba_flatten` | 3 000 | 3 000 | 0 | 0 | 38.06 µs |
-| `mba_obf_linear` | 1 000 | 1 000 | 0 | 0 | 81.98 µs |
-| `mba_obf_nonlinear` | 1 000 | 1 000 | 0 | 0 | 147.08 µs |
-| `syntia` | 500 | 480 | 20 | 0 | 36.81 µs |
-| `qsynth_ea` | 500 | 376 | 124 | 0 | 829.34 µs |
-| **Total** | **41 000** | **40 853** | **145** | **2** | |
+| `loki_tiny` | 25 000 | 25 000 | 0 | 0 | 12 µs |
+| `neureduce` | 10 000 | 9 793 | 207 | 0 | 34 µs |
+| `mba_flatten` | 3 000 | 3 000 | 0 | 0 | 44 µs |
+| `mba_obf_linear` | 1 000 | 1 000 | 0 | 0 | 42 µs |
+| `mba_obf_nonlinear` | 1 000 | 1 000 | 0 | 0 | 52 µs |
+| `syntia` | 500 | 479 | 21 | 0 | 11 µs |
+| `qsynth_ea` | 500 | 372 | 128 | 0 | 282 µs |
+| **Total** | **41 000** | **40 644** | **356** | **0** | **21 µs** |
 
 - **OK** — the simplified expression is syntactically identical to the
   simplified ground truth.
 - **OKZ** — the two differ syntactically, but `simplify(mba - ground_truth)`
   reduces to `0`, so they are proven equivalent.
 - **NG** — neither of the above. Solver errors are counted here too, so there is
-  no separate **ERR** bucket: the 2 above is the total of both.
+  no separate **ERR** bucket.
 
 Every result is additionally checked for semantic equivalence against the input
 on 200 random assignments; a mismatch fails the test suite outright, so no
 unsound simplification can reach this table.
 
-Timings are the wall-clock median of the simplification call alone, from a
-single run on one machine — treat them as an order of magnitude, not a
-benchmark. Reproduce with:
+The quality pass is also the warm-up. The latency report then performs five
+measured runs per dataset and reports the distribution from the median
+total-time run. Timings are machine-dependent; reproduce them with:
 
 ```sh
-cargo test datasets --release --all-features -- --nocapture
+just corpus
 ```
 
 ## Artifacts

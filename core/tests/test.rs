@@ -387,7 +387,7 @@ fn discovers_proven_binary_relation_between_hidden_components() {
 mod datasets {
     use super::*;
 
-    test_dataset!(loki_tiny, "loki_tiny.csv", max_ng = 2);
+    test_dataset!(loki_tiny, "loki_tiny.csv", max_ng = 0);
 
     test_dataset!(mba_flatten, "mba_flatten.csv", max_ng = 0);
 

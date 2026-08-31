@@ -772,13 +772,30 @@ fn simplify_mba_with_cache<C: LinearCache>(
     n: u8,
     options: SimplifyOptions,
 ) -> Result<Expr, SolveError> {
+    if let Some(candidate) = crate::fsc_frontend::simplify(&e, n) {
+        return Ok(candidate);
+    }
+    simplify_mba_v1_with_cache(cache, e, n, options)
+}
+
+fn simplify_mba_v1_with_cache<C: LinearCache>(
+    cache: &C,
+    e: Expr,
+    n: u8,
+    options: SimplifyOptions,
+) -> Result<Expr, SolveError> {
     let mask = make_mask(n);
     let e = e.reduce_masked(mask);
     let e = simplify_to_fixed_point(e, |e| simplify_mba_inner(cache, e, n, options))?;
 
     // The only place prettify may run: on the way out, after the fixed point has
     // settled. See the module docs for why it must stay out of the loop.
-    Ok(prettify(e, n))
+    Ok(crate::factorized_section::install(prettify(e, n), n))
+}
+
+#[cfg(test)]
+pub(crate) fn simplify_mba_v1(e: Expr, n: u8) -> Result<Expr, SolveError> {
+    simplify_mba_v1_with_cache(&LocalCache::new(), e, n, SimplifyOptions::default())
 }
 
 #[cfg(test)]
