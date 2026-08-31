@@ -19,6 +19,11 @@ use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::{MBASolver, reduce_vars};
 
+pub(super) struct HiddenMergeResult {
+    pub(super) expr: Expr,
+    pub(super) changed: bool,
+}
+
 thread_local! {
     /// Prevents a hidden-component equality query from recursively starting
     /// another query while simplifying its own difference.
@@ -206,11 +211,14 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
     /// variable. Syntactically equal components are already shared by `BiMap`;
     /// this catches independently written expressions whose difference has a
     /// zero signature.
-    pub(super) fn merge_equal_hidden_components(&mut self, e: Expr) -> Expr {
+    pub(super) fn merge_equal_hidden_components(&mut self, e: Expr) -> HiddenMergeResult {
         if HIDDEN_EQUALITY_DEPTH.with(|depth| depth.get() != 0)
             || self.non_linear_components.len() == 0
         {
-            return e;
+            return HiddenMergeResult {
+                expr: e,
+                changed: false,
+            };
         }
 
         let mut components: Vec<_> = self
@@ -221,7 +229,10 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             .collect();
         components.sort_unstable_by_key(|(variable, _)| variable.0);
         if components.is_empty() {
-            return e;
+            return HiddenMergeResult {
+                expr: e,
+                changed: false,
+            };
         }
 
         let mut aliases = HashMap::<VarId, Expr>::default();
@@ -262,7 +273,10 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             )
             .collect();
         let Some(samples) = make_signature_samples(&sampled_expressions, self.mask) else {
-            return e;
+            return HiddenMergeResult {
+                expr: e,
+                changed: false,
+            };
         };
         let (definition_samples, atom_samples) = samples.split_at(observed_expressions.len());
 
@@ -336,7 +350,10 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         }
 
         if aliases.is_empty() {
-            return e;
+            return HiddenMergeResult {
+                expr: e,
+                changed: false,
+            };
         }
 
         fn replace_aliases(e: Expr, aliases: &HashMap<VarId, Expr>) -> Expr {
@@ -352,7 +369,10 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
             }
         }
 
-        replace_aliases(e, &aliases).reduce_masked(self.mask)
+        HiddenMergeResult {
+            expr: replace_aliases(e, &aliases).reduce_masked(self.mask),
+            changed: true,
+        }
     }
 }
 

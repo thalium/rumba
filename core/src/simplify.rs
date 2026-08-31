@@ -132,9 +132,15 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
         let e = e.reduce_masked(self.mask);
 
         let p = self.make_polynomial(e)?;
-        let p = self.merge_equal_hidden_components(p);
-        self.degree = 1;
-        let p = self.make_polynomial(p)?;
+        let first_degree = self.degree;
+        let merged = self.merge_equal_hidden_components(p);
+        let p = if merged.changed && first_degree > 1 {
+            self.degree = 1;
+            self.make_polynomial(merged.expr)?
+        } else {
+            self.degree = first_degree;
+            merged.expr
+        };
         let p = self.solve_polynomial(p)?;
 
         // This was a non linear MBA
