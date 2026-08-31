@@ -58,7 +58,6 @@ Simplify (v0 ^ v1) + 2 * (v0 & v1)
 | `--n <uint>` | Bit width of the expression (default: `32`) |
 | `--hex` | Print constants in hexadecimal |
 | `--test` | Check the result against the input on 1000 random inputs |
-| `--no-patterns` | Disable the structural pattern-rewrite engine |
 
 Variables are written `v0`, `v1`, `v2`, … Use `--test` to gain confidence on a
 result you intend to act on:
@@ -100,13 +99,13 @@ Measured on the GAMBA dataset (41 000 expressions), at 64 bits:
 | Dataset | Count | OK | OKZ | NG | p50 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `loki_tiny` | 25 000 | 25 000 | 0 | 0 | 12 µs |
-| `neureduce` | 10 000 | 9 793 | 207 | 0 | 34 µs |
-| `mba_flatten` | 3 000 | 3 000 | 0 | 0 | 44 µs |
-| `mba_obf_linear` | 1 000 | 1 000 | 0 | 0 | 42 µs |
-| `mba_obf_nonlinear` | 1 000 | 1 000 | 0 | 0 | 52 µs |
-| `syntia` | 500 | 479 | 21 | 0 | 11 µs |
-| `qsynth_ea` | 500 | 372 | 128 | 0 | 282 µs |
-| **Total** | **41 000** | **40 644** | **356** | **0** | **21 µs** |
+| `neureduce` | 10 000 | 9 793 | 207 | 0 | 26 µs |
+| `mba_flatten` | 3 000 | 3 000 | 0 | 0 | 32 µs |
+| `mba_obf_linear` | 1 000 | 1 000 | 0 | 0 | 33 µs |
+| `mba_obf_nonlinear` | 1 000 | 1 000 | 0 | 0 | 48 µs |
+| `syntia` | 500 | 479 | 21 | 0 | 10 µs |
+| `qsynth_ea` | 500 | 372 | 128 | 0 | 212 µs |
+| **Total** | **41 000** | **40 644** | **356** | **0** | **18 µs** |
 
 - **OK** — the simplified expression is syntactically identical to the
   simplified ground truth.

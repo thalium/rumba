@@ -200,7 +200,7 @@ impl<'a, C: LinearCache> MBASolver<'a, C> {
 
         HIDDEN_EQUALITY_DEPTH.with(|depth| {
             depth.set(depth.get() + 1);
-            let mut solver = MBASolver::new(self.l_cache, &difference, self.n, self.options);
+            let mut solver = MBASolver::new(self.l_cache, &difference, self.n);
             let is_zero = solver.solve(difference).is_ok_and(|e| e == Expr::zero());
             depth.set(depth.get() - 1);
             is_zero

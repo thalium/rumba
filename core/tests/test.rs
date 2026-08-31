@@ -1,30 +1,12 @@
 #![cfg(feature = "parse")]
 
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use rumba_core::{expr::Expr, parser::parse_expr, simplify};
-
-/// Whether the pattern engine is enabled for this run.
-///
-/// `RUMBA_PATTERNS=0` disables it, so the corpus can be scored with and without
-/// the patterns -- see the `test-nopatterns` just target. Read once, so it costs
-/// nothing inside the timed loop.
-fn patterns_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("RUMBA_PATTERNS").as_deref() != Ok("0"))
-}
-
-/// Simplifies under the options selected by the environment.
-fn simplify_mba(e: Expr, n: u8) -> Result<Expr, simplify::SolveError> {
-    simplify::simplify_mba_with(
-        e,
-        n,
-        simplify::SimplifyOptions {
-            patterns: patterns_enabled(),
-        },
-    )
-}
+use rumba_core::{
+    expr::Expr,
+    parser::parse_expr,
+    simplify::{self, simplify_mba},
+};
 
 /// The number of semantic tests to run
 const SEMANTIC_TEST_COUNT: usize = 200;
@@ -240,14 +222,9 @@ fn run_csv_tests(filename: &'static str, csv: &str) -> Vec<ExperimentResult> {
     write_ng_report(filename, &results);
 
     println!(
-        "RESULTS \"{}\" (count: {}{}):\n\t[{}, {}, {}, {}, {}]\n\tOK: {}\tOKZ: {}\tNG: {}\n",
+        "RESULTS \"{}\" (count: {}):\n\t[{}, {}, {}, {}, {}]\n\tOK: {}\tOKZ: {}\tNG: {}\n",
         filename,
         results.len(),
-        if patterns_enabled() {
-            ""
-        } else {
-            ", patterns: off"
-        },
         format_duration(q0),
         format_duration(q1),
         format_duration(q2),
