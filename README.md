@@ -99,13 +99,13 @@ Measured on the GAMBA dataset (41 000 expressions), at 64 bits:
 | Dataset | Count | OK | OKZ | NG | p50 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `loki_tiny` | 25 000 | 25 000 | 0 | 0 | 12 µs |
-| `neureduce` | 10 000 | 9 793 | 207 | 0 | 26 µs |
-| `mba_flatten` | 3 000 | 3 000 | 0 | 0 | 32 µs |
-| `mba_obf_linear` | 1 000 | 1 000 | 0 | 0 | 33 µs |
-| `mba_obf_nonlinear` | 1 000 | 1 000 | 0 | 0 | 48 µs |
-| `syntia` | 500 | 479 | 21 | 0 | 10 µs |
-| `qsynth_ea` | 500 | 372 | 128 | 0 | 212 µs |
-| **Total** | **41 000** | **40 644** | **356** | **0** | **18 µs** |
+| `neureduce` | 10 000 | 9 867 | 133 | 0 | 26 µs |
+| `mba_flatten` | 3 000 | 2 952 | 48 | 0 | 31 µs |
+| `mba_obf_linear` | 1 000 | 992 | 8 | 0 | 32 µs |
+| `mba_obf_nonlinear` | 1 000 | 988 | 12 | 0 | 55 µs |
+| `syntia` | 500 | 480 | 20 | 0 | 9 µs |
+| `qsynth_ea` | 500 | 376 | 124 | 0 | 237 µs |
+| **Total** | **41 000** | **40 655** | **345** | **0** | **19 µs** |
 
 - **OK** — the simplified expression is syntactically identical to the
   simplified ground truth.

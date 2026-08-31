@@ -290,9 +290,9 @@ mod tests {
             terminal_lost,
             production_mismatch
         );
-        assert_eq!(one_base, 25_407);
-        assert_eq!(direct, 6_892);
-        assert_eq!(terminal, 15_164);
+        assert_eq!(one_base, 30_849);
+        assert_eq!(direct, 11_809);
+        assert_eq!(terminal, 15_632);
         assert_eq!(false_positive, 0);
         assert_eq!(descriptor_mismatch, 0);
         assert_eq!(semantic_mismatch_count, 0);

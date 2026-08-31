@@ -181,7 +181,7 @@ impl Expr {
             })
         } else if let Ok(rhs_int) = other.extract::<u64>() {
             Ok(Self {
-                inner: self.inner.clone() * expr::Expr::Const(rhs_int),
+                inner: rhs_int * self.inner.clone(),
             })
         } else {
             Err(exceptions::PyTypeError::new_err(

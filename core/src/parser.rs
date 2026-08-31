@@ -79,7 +79,16 @@ fn build_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr, String> {
         Rule::or => build_nary!(pair, Or),
         Rule::xor => build_nary!(pair, Xor),
         Rule::and => build_nary!(pair, And),
-        Rule::mul => build_nary!(pair, Mul),
+        Rule::mul => {
+            let mut inner = pair.into_inner();
+            let first = build_expr(inner.next().unwrap())?;
+            let rest = inner.map(build_expr).collect::<Result<Vec<_>, _>>()?;
+            if rest.is_empty() {
+                first
+            } else {
+                Expr::product(std::iter::once(first).chain(rest).collect())
+            }
+        }
 
         Rule::add => {
             let mut inner = pair.into_inner();
@@ -198,6 +207,7 @@ pub fn parse_program(input: &str) -> Result<Program, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expr::VarId;
 
     #[test]
     fn test_parse_program() {
@@ -279,5 +289,22 @@ u8 v5 = unknown(v4)
         // u64::MAX + 1 matches the grammar but does not fit in u64.
         let err = parse_expr("18446744073709551616").unwrap_err();
         assert!(err.contains("out of range"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn multiplication_never_parses_constants_or_scales_as_mul_children() {
+        let x = Expr::Var(VarId(0));
+        let y = Expr::Var(VarId(1));
+        assert_eq!(parse_expr("2*v0"), Ok(Expr::scale(2, x.clone())));
+        assert_eq!(parse_expr("v0*2"), Ok(Expr::scale(2, x.clone())));
+        assert_eq!(parse_expr("2*3*v0"), Ok(Expr::scale(6, x.clone())));
+        assert_eq!(
+            parse_expr("(2*v0)*v1"),
+            Ok(Expr::scale(2, Expr::Mul(vec![x.clone(), y.clone()])))
+        );
+        assert_eq!(
+            parse_expr("2*v0*v1"),
+            Ok(Expr::scale(2, Expr::Mul(vec![x, y])))
+        );
     }
 }

@@ -405,7 +405,12 @@ impl Reducer {
 
 impl Expr {
     pub(crate) fn reduce_masked(self, mask: u64) -> Self {
-        Reducer { mask }.reduce_masked(self)
+        let reduced = Reducer { mask }.reduce_masked(self);
+        debug_assert!(
+            reduced.products_are_canonical(),
+            "reducer emitted noncanonical product: {reduced:?}"
+        );
+        reduced
     }
 
     /// Canonicalizes the expression on `n` bits (constant folding, flattening

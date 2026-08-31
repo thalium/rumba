@@ -111,7 +111,7 @@ impl Mul for Expr {
     type Output = Expr;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        Expr::Mul(vec![self, rhs])
+        Expr::product(vec![self, rhs])
     }
 }
 
@@ -159,6 +159,60 @@ impl Expr {
             0 => Expr::zero(),
             1 => e,
             _ => Expr::Scale(c, Box::new(e)),
+        }
+    }
+
+    /// Builds the canonical arithmetic product: constants and existing scales
+    /// are represented by one outer [`Expr::Scale`], never as `Mul` children.
+    pub(crate) fn product(terms: Vec<Expr>) -> Expr {
+        let mut coefficient = 1u64;
+        let mut factors = Vec::with_capacity(terms.len());
+        let mut pending = terms;
+        while let Some(term) = pending.pop() {
+            match term {
+                Expr::Const(value) => coefficient = coefficient.wrapping_mul(value),
+                Expr::Scale(value, child) => {
+                    coefficient = coefficient.wrapping_mul(value);
+                    pending.push(*child);
+                }
+                Expr::Mul(mut children) => pending.append(&mut children),
+                factor => factors.push(factor),
+            }
+        }
+        if coefficient == 0 {
+            return Expr::zero();
+        }
+        factors.reverse();
+        match factors.len() {
+            0 => Expr::Const(coefficient),
+            1 => Expr::scale(coefficient, factors.pop().expect("one product factor")),
+            _ => Expr::scale(coefficient, Expr::Mul(factors)),
+        }
+    }
+
+    fn mapped_product(terms: Vec<Expr>) -> Expr {
+        if terms.len() == 1 && !matches!(terms.first(), Some(Expr::Const(_) | Expr::Scale(_, _))) {
+            Expr::Mul(terms)
+        } else {
+            Expr::product(terms)
+        }
+    }
+
+    /// Whether every arithmetic product keeps constants outside its `Mul`
+    /// factor list. Other historical polynomial shapes are outside this
+    /// invariant.
+    pub(crate) fn products_are_canonical(&self) -> bool {
+        match self {
+            Expr::Var(_) | Expr::Const(_) => true,
+            Expr::Not(child) | Expr::Scale(_, child) => child.products_are_canonical(),
+            Expr::Mul(children) => children.iter().all(|child| {
+                !matches!(child, Expr::Const(_) | Expr::Scale(_, _))
+                    && child.products_are_canonical()
+            }),
+            Expr::And(children)
+            | Expr::Or(children)
+            | Expr::Xor(children)
+            | Expr::Add(children) => children.iter().all(Expr::products_are_canonical),
         }
     }
 
@@ -584,7 +638,7 @@ impl Expr {
             Expr::Or(exprs) => Expr::Or(vec_map(exprs, f)),
             Expr::Xor(exprs) => Expr::Xor(vec_map(exprs, f)),
             Expr::Add(exprs) => Expr::Add(vec_map(exprs, f)),
-            Expr::Mul(exprs) => Expr::Mul(vec_map(exprs, f)),
+            Expr::Mul(exprs) => Expr::mapped_product(vec_map(exprs, f)),
         }
     }
 
@@ -613,7 +667,29 @@ impl Expr {
             Expr::Or(exprs) => Expr::Or(vec_try_map(exprs, f)?),
             Expr::Xor(exprs) => Expr::Xor(vec_try_map(exprs, f)?),
             Expr::Add(exprs) => Expr::Add(vec_try_map(exprs, f)?),
-            Expr::Mul(exprs) => Expr::Mul(vec_try_map(exprs, f)?),
+            Expr::Mul(exprs) => Expr::mapped_product(vec_try_map(exprs, f)?),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_product_extracts_constants_and_scales() {
+        let x = Expr::Var(VarId(0));
+        let y = Expr::Var(VarId(1));
+        assert_eq!(Expr::Const(2) * x.clone(), Expr::scale(2, x.clone()));
+        assert_eq!(x.clone() * Expr::Const(2), Expr::scale(2, x.clone()));
+        assert_eq!(
+            Expr::scale(2, x.clone()) * Expr::scale(3, y.clone()),
+            Expr::scale(6, Expr::Mul(vec![x.clone(), y.clone()]))
+        );
+        assert_eq!(Expr::Const(0) * x.clone() * y, Expr::zero());
+        assert_eq!(
+            Expr::Mul(vec![Expr::Const(7), x.clone()]).reduce(64),
+            Expr::scale(7, x)
+        );
     }
 }

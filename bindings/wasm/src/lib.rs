@@ -137,11 +137,11 @@ impl ExprWasm {
     #[wasm_bindgen]
     #[allow(clippy::boxed_local)]
     pub fn mul(&self, others: Box<[ExprWasm]>) -> ExprWasm {
-        let mut v: Vec<Expr> = others.iter().map(|e| e.inner.clone()).collect();
-        v.push(self.inner.clone());
-        ExprWasm {
-            inner: Expr::Mul(v),
-        }
+        let product = others
+            .iter()
+            .map(|expression| expression.inner.clone())
+            .fold(self.inner.clone(), |left, right| left * right);
+        ExprWasm { inner: product }
     }
 
     // Other utility methods
