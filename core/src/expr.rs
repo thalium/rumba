@@ -198,6 +198,40 @@ impl Expr {
         }
     }
 
+    fn canonicalize_associative<F>(children: Vec<Expr>, build: F) -> Expr
+    where
+        F: FnOnce(Vec<Expr>) -> Expr,
+    {
+        let mut children: Vec<_> = children
+            .into_iter()
+            .map(Expr::canonicalize_commutative)
+            .collect();
+        children.sort_unstable();
+        match children.len() {
+            1 => children.into_iter().next().expect("one child"),
+            _ => build(children),
+        }
+    }
+
+    /// Recursively sorts commutative operands and removes unary associative
+    /// nodes while preserving the canonical arithmetic-product representation.
+    pub(crate) fn canonicalize_commutative(self) -> Expr {
+        match self {
+            Expr::Var(_) | Expr::Const(_) => self,
+            Expr::Not(child) => Expr::Not(Box::new(child.canonicalize_commutative())),
+            Expr::Scale(coefficient, child) => {
+                Expr::Scale(coefficient, Box::new(child.canonicalize_commutative()))
+            }
+            Expr::And(children) => Self::canonicalize_associative(children, Expr::And),
+            Expr::Or(children) => Self::canonicalize_associative(children, Expr::Or),
+            Expr::Xor(children) => Self::canonicalize_associative(children, Expr::Xor),
+            Expr::Add(children) => Self::canonicalize_associative(children, Expr::Add),
+            Expr::Mul(children) => {
+                Expr::product(vec![Self::canonicalize_associative(children, Expr::Mul)])
+            }
+        }
+    }
+
     /// Whether every arithmetic product keeps constants outside its `Mul`
     /// factor list. Other historical polynomial shapes are outside this
     /// invariant.
@@ -690,6 +724,29 @@ mod tests {
         assert_eq!(
             Expr::Mul(vec![Expr::Const(7), x.clone()]).reduce(64),
             Expr::scale(7, x)
+        );
+    }
+
+    #[test]
+    fn canonicalize_commutative_removes_unary_associative_nodes() {
+        let x = Expr::Var(VarId(0));
+        let expression = Expr::Add(vec![Expr::And(vec![Expr::Mul(vec![
+            Expr::Const(2),
+            x.clone(),
+        ])])]);
+
+        assert_eq!(expression.canonicalize_commutative(), Expr::scale(2, x));
+    }
+
+    #[test]
+    fn canonicalize_commutative_sorts_operands() {
+        let x = Expr::Var(VarId(0));
+        let y = Expr::Var(VarId(1));
+        let expression = Expr::Add(vec![Expr::Const(1), y.clone(), x.clone()]);
+
+        assert_eq!(
+            expression.canonicalize_commutative(),
+            Expr::Add(vec![x, y, Expr::Const(1)])
         );
     }
 }

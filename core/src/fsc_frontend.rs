@@ -257,7 +257,9 @@ mod tests {
                     .is_some_and(|(left, right)| !same_key(left, right)),
             );
             let expected_candidate = authoritative.and_then(render);
-            let candidate = compiled.and_then(render);
+            let candidate = compiled
+                .and_then(render)
+                .map(Expr::canonicalize_commutative);
             terminal_lost += usize::from(expected_candidate.is_some() && candidate.is_none());
             if let Some(candidate) = candidate {
                 terminal += 1;

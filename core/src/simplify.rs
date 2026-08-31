@@ -722,7 +722,7 @@ pub fn simplify_mba_cached(e: Expr, n: u8, cache: &SimplifyCache) -> Result<Expr
 
 fn simplify_mba_with_cache<C: LinearCache>(cache: &C, e: Expr, n: u8) -> Result<Expr, SolveError> {
     if let Some(candidate) = crate::fsc_frontend::simplify(&e, n) {
-        return Ok(candidate);
+        return Ok(candidate.canonicalize_commutative());
     }
     simplify_mba_v1_with_cache(cache, e, n)
 }
@@ -738,7 +738,7 @@ fn simplify_mba_v1_with_cache<C: LinearCache>(
 
     // The only place prettify may run: on the way out, after the fixed point has
     // settled. See the module docs for why it must stay out of the loop.
-    Ok(crate::factorized_section::install(prettify(e, n), n))
+    Ok(crate::factorized_section::install(prettify(e, n), n).canonicalize_commutative())
 }
 
 #[cfg(test)]

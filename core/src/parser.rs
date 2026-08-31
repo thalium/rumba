@@ -135,7 +135,9 @@ pub fn parse_expr(input: &str) -> Result<Expr, String> {
     let input = input.replace(['\n', '\r'], " ");
     let mut pairs = RumbaParser::parse(Rule::expr_eoi, &input).map_err(|e| e.to_string())?;
 
-    build_expr(pairs.next().unwrap())
+    let expression = build_expr(pairs.next().unwrap())?.canonicalize_commutative();
+    debug_assert!(expression.products_are_canonical());
+    Ok(expression)
 }
 
 /// Parses a program (a sequence of statements) from its textual form.
@@ -190,7 +192,8 @@ pub fn parse_program(input: &str) -> Result<Program, String> {
                         .map_err(|_| format!("variable index out of range: {var_str}"))?;
 
                     let expr_pair = inner.next().unwrap();
-                    let expr = build_expr(expr_pair)?;
+                    let expr = build_expr(expr_pair)?.canonicalize_commutative();
+                    debug_assert!(expr.products_are_canonical());
 
                     (t, var_id.into(), InsnKind::Assign(expr))
                 }
