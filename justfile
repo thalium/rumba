@@ -36,6 +36,14 @@ all-test:
 bench:
     cargo bench --all-features
 
+# Build the standalone corpus report runner.
+_corpus-report-runner:
+    cargo build --release -p rumba-core --example corpus --features parse
+
+# Report corpus quality and latency; pass ARGS to the runner.
+corpus *ARGS: _corpus-report-runner
+    target/release/examples/corpus {{ARGS}}
+
 gen-c-headers:
     cd bindings/c && cbindgen --config cbindgen.toml --output include/rumba.h
 
